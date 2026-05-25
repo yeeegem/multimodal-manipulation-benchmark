@@ -1,2 +1,2 @@
 # multimodal-manipulation-benchmark
-Designed and implemented a fixed tabletop robotic manipulation benchmark to compare imitation-learning policies on a symmetric multimodal pick-and-place task, focusing on behavior cloning failure modes and diffusion-policy mode selection
+Reproducible robotic manipulation benchmark for evaluating multimodal imitation-learning policies. Compared behavior cloning, diffusion-based policies, and transformer-based action policies under symmetric pick-and-place demonstrations, using quantitative metrics for success rate, mode commitment, midpoint collapse, and robustness to layout perturbations.
