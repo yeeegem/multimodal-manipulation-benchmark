@@ -68,7 +68,8 @@ denoiser:
 
 training:
   seed: 42
-  batch_size: 64
+  # 16 GB VRAM at 480×640 native resolution with AMP. Tune if OOM.
+  batch_size: 16
   num_workers: 4
   num_epochs: 300
   lr: 1.0e-4
@@ -83,6 +84,8 @@ training:
   save_every: 10            # epochs between checkpoint saves
   # Base directory for run outputs; actual run dir is run_dir/TIMESTAMP_hash.
   run_dir: "runs"
+  # AMP reduces memory usage and speeds up training on modern GPUs.
+  use_amp: true
 
 eval:
   # Number of rollout trials per evaluation tier.
