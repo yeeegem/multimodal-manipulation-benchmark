@@ -12,7 +12,9 @@ dataset:
   fps: 30
   # Images are resized to this (H, W) before being fed to the encoder.
   # ResNet18 expects at least 32x32; 96x96 balances fidelity and memory.
-  image_size: [96, 96]
+  # Native camera resolution — no downsampling (16 GPUs, no memory pressure).
+  # ResNet18 handles arbitrary spatial sizes via global average pool.
+  image_size: [480, 640]
 
 model:
   # T_o: how many consecutive observation frames form one conditioning input.
