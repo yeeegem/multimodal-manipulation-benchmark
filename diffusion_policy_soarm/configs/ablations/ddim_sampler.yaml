@@ -1,0 +1,6 @@
+# Ablation: use DDIM sampling with 10 inference steps instead of full DDPM.
+# Merge on top of base.yaml. Weights are shared (same training config).
+
+diffusion:
+  sampler: "ddim"
+  num_inference_steps: 10

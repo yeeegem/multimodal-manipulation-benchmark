@@ -1,0 +1,6 @@
+# Ablation: longer action chunk (H=32, k=16) to test sensitivity to chunk length.
+# Merge on top of base.yaml.
+
+model:
+  pred_horizon: 32
+  exec_horizon: 16

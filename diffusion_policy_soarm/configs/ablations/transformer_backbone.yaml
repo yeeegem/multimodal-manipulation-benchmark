@@ -1,0 +1,5 @@
+# Ablation: swap the CNN U-Net denoiser for a Transformer denoiser.
+# Merge on top of base.yaml.
+
+denoiser:
+  backbone: "transformer"

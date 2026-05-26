@@ -1,0 +1,98 @@
+# Base configuration for Diffusion Policy on SO-ARM101 redcubes_bluecup task.
+# All paths are relative to the repository root unless otherwise noted.
+# Override any key with "key=value" on the CLI (dot-notation for nested keys).
+
+dataset:
+  path: "recordings/redcubes_bluecup"
+  camera_keys:
+    - "observation.images.front"
+    - "observation.images.wrist"
+  state_key: "observation.state"
+  action_key: "action"
+  fps: 30
+  # Images are resized to this (H, W) before being fed to the encoder.
+  # ResNet18 expects at least 32x32; 96x96 balances fidelity and memory.
+  image_size: [96, 96]
+
+model:
+  # T_o: how many consecutive observation frames form one conditioning input.
+  obs_horizon: 2
+  # T_p: length of the predicted action chunk (the denoiser output dimension).
+  pred_horizon: 16
+  # T_a: how many steps of the chunk are actually executed before replanning.
+  exec_horizon: 8
+
+encoder:
+  backbone: "resnet18"
+  pretrained: true          # load ImageNet weights
+  freeze_bn: false          # freeze BatchNorm during fine-tuning (ablation axis)
+  # Feature vector size per camera after global average pool + linear head.
+  feature_dim: 512
+  # Linear projection dimension for the proprioceptive state vector.
+  state_embed_dim: 64
+
+diffusion:
+  num_train_timesteps: 100
+  # "cosine" schedule (Nichol & Dhariwal 2021) is the paper default.
+  # Set to "linear" and tune beta_start/beta_end for the DDPM baseline.
+  noise_schedule: "cosine"
+  beta_start: 0.0001        # only used when noise_schedule == "linear"
+  beta_end: 0.02            # only used when noise_schedule == "linear"
+  # Sampler used at inference. "ddpm" = full T-step ancestral; "ddim" = fast.
+  sampler: "ddpm"
+  # Number of denoising steps at inference. For DDPM this equals
+  # num_train_timesteps; for DDIM it can be much smaller (e.g. 10–20).
+  num_inference_steps: 100
+  clip_sample: true         # clip denoised actions to [-1, 1] each step
+  prediction_type: "epsilon" # paper: predict the added noise, not x_0
+
+denoiser:
+  # "cnn" = 1-D temporal U-Net with FiLM conditioning (paper default).
+  # "transformer" = cross-attention transformer (ablation).
+  backbone: "cnn"
+
+  cnn:
+    # Channel widths at each U-Net level (doubles at each downsample).
+    channels: [256, 512, 1024]
+    kernel_size: 5
+    # Number of groups for GroupNorm inside the residual blocks.
+    n_groups: 8
+
+  transformer:
+    n_heads: 8
+    n_layers: 6
+    d_model: 256
+    dropout: 0.1
+
+training:
+  seed: 42
+  batch_size: 64
+  num_workers: 4
+  num_epochs: 300
+  lr: 1.0e-4
+  weight_decay: 1.0e-6
+  # "cosine" annealing with a linear warm-up is the paper default.
+  lr_scheduler: "cosine"
+  warmup_steps: 500
+  # EMA decay for the shadow copy of the denoiser weights used at inference.
+  ema_decay: 0.9999
+  grad_clip: 1.0
+  log_every: 100            # gradient steps between TensorBoard log writes
+  save_every: 10            # epochs between checkpoint saves
+  # Base directory for run outputs; actual run dir is run_dir/TIMESTAMP_hash.
+  run_dir: "runs"
+
+eval:
+  # Number of rollout trials per evaluation tier.
+  num_trials_per_tier: 30
+  tiers: ["A", "B", "C"]
+  # Ordered failure categories assigned by first-cause priority.
+  failure_categories:
+    - "grabbed_nothing"
+    - "grasped_wrong_object"
+    - "grasp_slip"
+    - "missed_cup"
+    - "knocked_cup_over"
+    - "collision_unsafe"
+    - "froze_no_attempt"
+    - "timeout"
