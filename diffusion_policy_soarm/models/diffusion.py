@@ -345,6 +345,121 @@ class DDIMSampler:
 
 
 # ---------------------------------------------------------------------------
+# DiffusionModule — top-level model
+# ---------------------------------------------------------------------------
+
+class DiffusionModule(nn.Module):
+    """Top-level model: encoder + denoiser + normalizers + schedule + sampler.
+
+    Owns all trainable parameters and the inference sampler.  The EMA shadow
+    copy of the denoiser weights is managed externally in the training loop
+    (see train.py) so that this module stays serialisable without extra state.
+
+    Args:
+        cfg: Full resolved config.
+        encoder: ObservationEncoder.
+        denoiser: ConditionalUNet1d or TransformerDenoiser.
+        action_normalizer: Normalizer for the action chunk.
+        state_normalizer: Normalizer for the proprioceptive state.
+    """
+
+    def __init__(
+        self,
+        cfg: DictConfig,
+        encoder: nn.Module,
+        denoiser: nn.Module,
+        action_normalizer: nn.Module,
+        state_normalizer: nn.Module,
+    ) -> None:
+        super().__init__()
+        self.cfg = cfg
+        self.encoder = encoder
+        self.denoiser = denoiser
+        self.action_normalizer = action_normalizer
+        self.state_normalizer = state_normalizer
+
+        self.schedule = make_noise_schedule(cfg.diffusion)
+        self._build_sampler()
+
+    def _build_sampler(self) -> None:
+        clip = self.cfg.diffusion.clip_sample
+        if self.cfg.diffusion.sampler == "ddpm":
+            self._sampler = DDPMSampler(self.schedule, clip_sample=clip)
+        elif self.cfg.diffusion.sampler == "ddim":
+            self._sampler = DDIMSampler(
+                self.schedule,
+                num_inference_steps=self.cfg.diffusion.num_inference_steps,
+                clip_sample=clip,
+            )
+        else:
+            raise ValueError(f"Unknown sampler: {self.cfg.diffusion.sampler!r}")
+
+    def compute_loss(self, batch: dict) -> torch.Tensor:
+        """Training forward pass.
+
+        Normalises observations and actions, encodes observations, and computes
+        the epsilon-prediction MSE loss.
+
+        Args:
+            batch: Dict with keys ``"images"``, ``"state"``, ``"actions"``.
+
+        Returns:
+            Scalar loss tensor (on the same device as the batch).
+        """
+        state_norm = self.state_normalizer(batch["state"])
+        action_norm = self.action_normalizer(batch["actions"])
+        obs_cond = self.encoder(batch["images"], state_norm)
+        return diffusion_loss(self.denoiser, action_norm, obs_cond, self.schedule)
+
+    @torch.no_grad()
+    def predict_actions(self, batch: dict) -> torch.Tensor:
+        """Inference forward pass.
+
+        Encodes observations and runs the configured sampler to produce a
+        clean (normalised) action chunk, then denormalises before returning.
+
+        Args:
+            batch: Dict with keys ``"images"`` and ``"state"``.
+
+        Returns:
+            Denormalised action chunk ``(B, pred_horizon, action_dim)``.
+        """
+        device = next(self.parameters()).device
+        B = batch["state"].shape[0]
+        state_norm = self.state_normalizer(batch["state"])
+        obs_cond = self.encoder(batch["images"], state_norm)
+
+        action_dim = self.cfg.model.get("action_dim", 6)
+        pred_horizon = self.cfg.model.pred_horizon
+        shape = (B, pred_horizon, action_dim)
+
+        actions_norm = self._sampler.sample(self.denoiser, shape, obs_cond, device)
+        return self.action_normalizer.inverse(actions_norm)
+
+
+def build_denoiser(cfg: DictConfig, action_dim: int, obs_cond_dim: int) -> nn.Module:
+    """Factory: instantiate the denoiser selected by ``cfg.denoiser.backbone``.
+
+    Args:
+        cfg: Full resolved config.
+        action_dim: Dimensionality of one action step.
+        obs_cond_dim: ObservationEncoder output dimension.
+
+    Returns:
+        ConditionalUNet1d or TransformerDenoiser.
+    """
+    backbone = cfg.denoiser.backbone
+    if backbone == "cnn":
+        from diffusion_policy_soarm.models.cnn_backbone import ConditionalUNet1d
+        return ConditionalUNet1d(cfg, action_dim=action_dim, obs_cond_dim=obs_cond_dim)
+    elif backbone == "transformer":
+        from diffusion_policy_soarm.models.transformer_backbone import TransformerDenoiser
+        return TransformerDenoiser(cfg, action_dim=action_dim, cond_dim=obs_cond_dim)
+    else:
+        raise ValueError(f"Unknown denoiser backbone: {backbone!r}")
+
+
+# ---------------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------------
 
