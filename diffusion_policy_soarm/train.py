@@ -172,11 +172,28 @@ def load_checkpoint(
 # Core training loop (shared between train.py and overfit_check.py)
 # ---------------------------------------------------------------------------
 
+def resolve_checkpoint(resume: str | Path) -> Path:
+    """Return the checkpoint .pt path from a file or run-directory argument.
+
+    Accepts either:
+    - A direct path to a ``.pt`` file.
+    - A run directory — auto-selects ``checkpoints/latest.pt``.
+    """
+    p = Path(resume)
+    if p.is_file():
+        return p
+    latest = p / "checkpoints" / "latest.pt"
+    if latest.exists():
+        return latest
+    raise FileNotFoundError(f"No checkpoint found at {resume}")
+
+
 def run_training(
     cfg,
     run_dir: Path,
     episode_ids: list[int] | None = None,
     max_steps: int | None = None,
+    resume_from: str | Path | None = None,
 ) -> DiffusionModule:
     """Main training loop.
 
@@ -186,6 +203,10 @@ def run_training(
         episode_ids: If set, restrict training to these episode indices
             (used by the overfit sanity check).
         max_steps: Hard stop after this many gradient steps (overfit check).
+        resume_from: Path to a checkpoint ``.pt`` file or a run directory
+            containing ``checkpoints/latest.pt``.  When provided, model /
+            EMA / optimiser / scheduler states are restored and training
+            continues from the saved epoch and step.
 
     Returns:
         The EMA model (shadow weights) for downstream evaluation.
@@ -197,6 +218,7 @@ def run_training(
     ds = DiffusionDataset(cfg, episode_ids=episode_ids)
     print(f"Training samples: {len(ds)}")
 
+    # persistent_workers=False: PyAV video decoding deadlocks with persistent workers.
     loader = DataLoader(
         ds,
         batch_size=cfg.training.batch_size,
@@ -204,7 +226,8 @@ def run_training(
         num_workers=cfg.training.num_workers,
         pin_memory=device.type == "cuda",
         drop_last=True,
-        persistent_workers=cfg.training.num_workers > 0,
+        persistent_workers=False,
+        prefetch_factor=2 if cfg.training.num_workers > 0 else None,
     )
 
     # --- Model --------------------------------------------------------------
@@ -233,6 +256,16 @@ def run_training(
         schedule=cfg.training.lr_scheduler,
     )
 
+    # --- Resume -------------------------------------------------------------
+    start_epoch = 0
+    step = 0
+    if resume_from is not None:
+        ckpt_path = resolve_checkpoint(resume_from)
+        print(f"Resuming from {ckpt_path}")
+        start_epoch, step = load_checkpoint(ckpt_path, model, ema, optimizer, scheduler)
+        start_epoch += 1  # saved epoch is the last completed one
+        print(f"  Resumed at epoch {start_epoch}, global step {step}")
+
     # --- AMP ----------------------------------------------------------------
     use_amp: bool = cfg.training.use_amp and device.type == "cuda"
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
@@ -240,10 +273,9 @@ def run_training(
     # --- Logging ------------------------------------------------------------
     writer = SummaryWriter(run_dir / "tb")
     best_loss = float("inf")
-    step = 0
 
     # --- Training loop ------------------------------------------------------
-    for epoch in range(cfg.training.num_epochs):
+    for epoch in range(start_epoch, cfg.training.num_epochs):
         model.train()
         epoch_losses: list[float] = []
 
@@ -307,6 +339,11 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Train Diffusion Policy on SO-ARM101.")
     parser.add_argument("--config", required=True, help="Path to base YAML config.")
     parser.add_argument("--override", default=None, help="Path to ablation override YAML.")
+    parser.add_argument(
+        "--resume",
+        default=None,
+        help="Path to a checkpoint .pt file or a run directory containing checkpoints/latest.pt.",
+    )
     args, overrides = parser.parse_known_args(argv)
 
     cfg = load_config(args.config, overrides or None)
@@ -319,7 +356,7 @@ def main(argv: list[str] | None = None) -> None:
     save_config(cfg, run_dir)
     print(f"Run directory: {run_dir}")
 
-    run_training(cfg, run_dir)
+    run_training(cfg, run_dir, resume_from=args.resume)
 
 
 if __name__ == "__main__":

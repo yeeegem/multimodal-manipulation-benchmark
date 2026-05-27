@@ -45,8 +45,9 @@ def run_overfit_check(cfg_path: str, overrides: list[str] | None = None) -> None
         "training.lr=3e-4",
         "training.warmup_steps=100",
         "training.log_every=50",
-        "training.save_every=999",   # suppress epoch saves; we only need latest/best
-        "training.num_workers=2",
+        "training.save_every=10",
+        # num_workers=0 avoids PyAV deadlocks with persistent workers
+        "training.num_workers=0",
     ]
     cfg = load_config(cfg_path, (overrides or []) + overfit_overrides)
 

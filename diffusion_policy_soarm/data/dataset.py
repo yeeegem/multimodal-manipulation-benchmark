@@ -18,6 +18,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TypedDict
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
@@ -98,6 +99,48 @@ class DiffusionDataset(Dataset):
         # episode so every sample has a complete, unpadded action chunk.
         self._valid_indices = self._compute_valid_indices(self._lerobot_ds, episode_ids)
 
+        # Frame cache: if pre-extracted numpy arrays exist, use them instead of
+        # PyAV video decoding to keep the GPU fed at ~100%.
+        cache_dir = dataset_path / "frame_cache"
+        self._use_cache = cache_dir.exists()
+        if self._use_cache:
+            self._init_frame_cache(cache_dir, dataset_path, fps)
+
+    def _init_frame_cache(self, cache_dir: Path, dataset_path: Path, fps: float) -> None:
+        """Load per-episode mmap arrays and build a state/action-only LeRobot instance."""
+        total_eps = self._lerobot_ds.meta.total_episodes
+
+        # Memory-mapped frame arrays: {cam_key: [ep0_mmap, ep1_mmap, ...]}
+        self._frame_mmaps: dict[str, list[np.ndarray]] = {}
+        for cam_key in self.camera_keys:
+            safe_key = cam_key.replace("/", ".")
+            cam_dir = cache_dir / safe_key
+            self._frame_mmaps[cam_key] = [
+                np.load(str(cam_dir / f"episode_{i:06d}.npy"), mmap_mode="r")
+                for i in range(total_eps)
+            ]
+
+        # Global frame index → (episode_idx, local_offset within episode)
+        total_frames = self._lerobot_ds.meta.episodes[-1]["dataset_to_index"]
+        self._global_ep_idx = np.empty(total_frames, dtype=np.int32)
+        self._global_local_off = np.empty(total_frames, dtype=np.int32)
+        for ep_idx, ep in enumerate(self._lerobot_ds.meta.episodes):
+            f, t = ep["dataset_from_index"], ep["dataset_to_index"]
+            self._global_ep_idx[f:t] = ep_idx
+            self._global_local_off[f:t] = np.arange(t - f, dtype=np.int32)
+
+        # Lightweight LeRobot instance for state + action only (no video decoding).
+        obs_delta = [-(self.obs_horizon - 1 - i) / fps for i in range(self.obs_horizon)]
+        act_delta = [i / fps for i in range(self.pred_horizon)]
+        self._sa_ds = LeRobotDataset(
+            repo_id=dataset_path.name,
+            root=dataset_path,
+            download_videos=False,
+            video_backend="pyav",
+            delta_timestamps={self.state_key: obs_delta, self.action_key: act_delta},
+            tolerance_s=0.5 / fps,
+        )
+
     def _compute_valid_indices(
         self, ds: LeRobotDataset, episode_ids: list[int] | None
     ) -> list[int]:
@@ -118,18 +161,45 @@ class DiffusionDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Batch:
         global_idx = self._valid_indices[idx]
-        raw = self._lerobot_ds[global_idx]
+        if self._use_cache:
+            return self._getitem_cached(global_idx)
+        return self._getitem_lerobot(global_idx)
 
+    def _getitem_lerobot(self, global_idx: int) -> Batch:
+        raw = self._lerobot_ds[global_idx]
         images: dict[str, torch.Tensor] = {}
         for key in self.camera_keys:
-            # LeRobot returns (obs_horizon, C, H, W) for windowed camera keys
-            frames: torch.Tensor = raw[key]
-            images[key] = self._resize(frames)
-
+            images[key] = self._resize(raw[key])
         return Batch(
             images=images,
-            state=raw[self.state_key],           # (obs_horizon, state_dim)
-            actions=raw[self.action_key],         # (pred_horizon, action_dim)
+            state=raw[self.state_key],
+            actions=raw[self.action_key],
+        )
+
+    def _getitem_cached(self, global_idx: int) -> Batch:
+        ep_idx = int(self._global_ep_idx[global_idx])
+        local_off = int(self._global_local_off[global_idx])
+
+        # Observation window: clamp to episode start (repeats first frame like LeRobot).
+        obs_locals = [
+            max(0, local_off - (self.obs_horizon - 1 - i))
+            for i in range(self.obs_horizon)
+        ]
+
+        images: dict[str, torch.Tensor] = {}
+        for cam_key in self.camera_keys:
+            mmap = self._frame_mmaps[cam_key][ep_idx]
+            # (T, H, W, 3) uint8 → (T, C, H, W) float32 in [0, 1]
+            frames_np = np.stack([mmap[j] for j in obs_locals])
+            frames_t = torch.from_numpy(frames_np.copy()).permute(0, 3, 1, 2).float().div_(255.0)
+            images[cam_key] = frames_t
+
+        # State + action from the lightweight (no-video) LeRobot instance.
+        raw = self._sa_ds[global_idx]
+        return Batch(
+            images=images,
+            state=raw[self.state_key],
+            actions=raw[self.action_key],
         )
 
     def _resize(self, frames: torch.Tensor) -> torch.Tensor:

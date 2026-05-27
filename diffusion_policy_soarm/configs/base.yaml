@@ -68,8 +68,7 @@ denoiser:
 
 training:
   seed: 42
-  # 16 GB VRAM at 480×640 native resolution with AMP. Tune if OOM.
-  batch_size: 16
+  batch_size: 32
   num_workers: 4
   num_epochs: 300
   lr: 1.0e-4
