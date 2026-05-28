@@ -110,6 +110,15 @@ uv run python -m diffusion_policy_soarm.train \
 
 ### 4. Inference on the arm
 
+**Smoke test without hardware (checks shapes and latency):**
+```bash
+uv run python -m diffusion_policy_soarm.infer \
+    --checkpoint runs/<experiment>/<timestamp>/checkpoints/best.pt \
+    --config runs/<experiment>/<timestamp>/config.yaml \
+    --dry-run
+```
+
+**Full run on the arm:**
 ```bash
 uv run python -m diffusion_policy_soarm.infer \
     --checkpoint runs/<experiment>/<timestamp>/checkpoints/best.pt \

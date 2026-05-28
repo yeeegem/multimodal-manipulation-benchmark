@@ -2,24 +2,265 @@
 
 Usage:
     uv run python -m diffusion_policy_soarm.infer \\
-        --checkpoint runs/<run>/checkpoints/ema_latest.pt \\
-        --config runs/<run>/config.yaml \\
-        [key=value overrides]
+        --checkpoint runs/<experiment>/<timestamp>/checkpoints/best.pt \\
+        --config runs/<experiment>/<timestamp>/config.yaml \\
+        [--dry-run] \\
+        [key=value overrides, e.g. infer.num_ddim_steps=5]
 
-Phase 6 implementation target:
-- Load EMA checkpoint, build model in eval mode.
-- Connect to the arm via lerobot's robot interface.
-- Observation loop: capture images + state → encode → DDIM sample → execute T_a steps.
-- Report per-inference latency (mean and p95) over a 100-step window.
-- Optional torch.compile path controlled by infer.compile flag in config.
+Latency budget: observation capture + DDIM sampling must finish within one
+step period (1/fps ≈ 33 ms at 30 Hz).  Use --dry-run to test without the arm.
 """
 
 from __future__ import annotations
 
+import argparse
+import collections
+import time
+from pathlib import Path
 
-def main() -> None:
-    """Real-time inference loop entry point."""
-    raise NotImplementedError("Phase 6")
+import numpy as np
+import torch
+import torch.nn.functional as F
+from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
+from lerobot.robots.so_follower.config_so_follower import SOFollowerRobotConfig
+from lerobot.robots.so_follower.so_follower import SOFollower
+from omegaconf import OmegaConf
+
+from diffusion_policy_soarm.data.normalization import Normalizer
+from diffusion_policy_soarm.models.diffusion import DiffusionModule, build_denoiser
+from diffusion_policy_soarm.models.encoders import ObservationEncoder
+from diffusion_policy_soarm.utils.config import load_config
+
+
+# ---------------------------------------------------------------------------
+# Model construction
+# ---------------------------------------------------------------------------
+
+def _build_inference_model(cfg, run_dir: Path) -> DiffusionModule:
+    """Build DiffusionModule from saved normalizer files (no dataset needed).
+
+    Derives action_dim and state_dim from the normalizer JSON files saved
+    alongside the checkpoint, then assembles encoder + denoiser + module.
+    """
+    action_norm = Normalizer.from_file(run_dir / "action_normalizer.json")
+    state_norm = Normalizer.from_file(run_dir / "state_normalizer.json")
+    action_dim = int(action_norm.mins.shape[0])
+    state_dim = int(state_norm.mins.shape[0])
+
+    camera_keys = list(cfg.dataset.camera_keys)
+    encoder = ObservationEncoder(cfg, camera_keys=camera_keys, state_dim=state_dim)
+    denoiser = build_denoiser(cfg, action_dim=action_dim, obs_cond_dim=encoder.output_dim)
+    return DiffusionModule(cfg, encoder, denoiser, action_norm, state_norm)
+
+
+# ---------------------------------------------------------------------------
+# Observation preprocessing
+# ---------------------------------------------------------------------------
+
+def _preprocess_obs_buffer(
+    obs_buffer: collections.deque,
+    camera_key_map: dict[str, str],
+    motor_names: list[str],
+    image_size: tuple[int, int],
+    device: torch.device,
+) -> dict:
+    """Convert a deque of raw robot obs dicts into a model-ready batch.
+
+    Camera images are (H, W, C) uint8 numpy arrays keyed by robot camera
+    short name (e.g. "front").  Motor positions are floats keyed as
+    "<motor_name>.pos".  Both are converted to float32 tensors on *device*.
+
+    Args:
+        obs_buffer: Deque of length obs_horizon, each element a dict from
+            robot.get_observation().
+        camera_key_map: Maps robot camera short name → dataset feature key.
+        motor_names: Ordered motor names matching the training state vector.
+        image_size: Target (H, W) to resize camera frames to.
+        device: Target device for output tensors.
+
+    Returns:
+        Dict with:
+          "images": {dataset_key: (1, T_o, C, H, W) float32}
+          "state":  (1, T_o, state_dim) float32
+    """
+    h, w = image_size
+
+    images: dict[str, torch.Tensor] = {}
+    for robot_name, ds_key in camera_key_map.items():
+        frames = []
+        for obs in obs_buffer:
+            frame = obs[robot_name]  # (H_raw, W_raw, C) uint8 numpy
+            t = torch.from_numpy(np.ascontiguousarray(frame)).permute(2, 0, 1).float().div_(255.0)
+            frames.append(t)
+        stacked = torch.stack(frames, dim=0)  # (T_o, C, H_raw, W_raw)
+        if stacked.shape[-2:] != (h, w):
+            stacked = F.interpolate(stacked, size=(h, w), mode="bilinear", align_corners=False)
+        images[ds_key] = stacked.unsqueeze(0).to(device)  # (1, T_o, C, h, w)
+
+    state_frames = []
+    for obs in obs_buffer:
+        positions = [float(obs[f"{m}.pos"]) for m in motor_names]
+        state_frames.append(torch.tensor(positions, dtype=torch.float32))
+    state = torch.stack(state_frames, dim=0).unsqueeze(0).to(device)  # (1, T_o, state_dim)
+
+    return {"images": images, "state": state}
+
+
+# ---------------------------------------------------------------------------
+# Control loop
+# ---------------------------------------------------------------------------
+
+def _run_loop(
+    cfg,
+    model: DiffusionModule,
+    robot: SOFollower | None,
+    motor_names: list[str],
+    dry_run: bool,
+    device: torch.device,
+) -> None:
+    """Receding-horizon control loop.
+
+    Each iteration:
+      1. Capture one fresh observation (or use synthetic obs in dry-run).
+      2. Build model batch from obs_horizon-length rolling buffer.
+      3. Run DDIM inference to get a pred_horizon-step action chunk.
+      4. Execute exec_horizon steps at 1/fps Hz, then replan.
+
+    Latency (obs capture + encode + DDIM sample) is tracked over a 100-step
+    rolling window and printed each iteration as mean and p95.
+    """
+    obs_horizon: int = cfg.model.obs_horizon
+    exec_horizon: int = cfg.model.exec_horizon
+    fps: float = cfg.dataset.fps
+    image_size: tuple[int, int] = tuple(cfg.dataset.image_size)
+    camera_key_map: dict[str, str] = dict(cfg.infer.camera_key_map)
+    step_duration = 1.0 / fps
+
+    latencies: collections.deque = collections.deque(maxlen=100)
+    obs_buffer: collections.deque = collections.deque(maxlen=obs_horizon)
+
+    # Pre-fill observation buffer with obs_horizon frames before the loop.
+    if dry_run:
+        cam_names = list(camera_key_map.keys())
+        cam_h = int(cfg.infer.cameras[cam_names[0]].height)
+        cam_w = int(cfg.infer.cameras[cam_names[0]].width)
+        for _ in range(obs_horizon):
+            fake: dict = {name: np.zeros((cam_h, cam_w, 3), dtype=np.uint8) for name in cam_names}
+            for m in motor_names:
+                fake[f"{m}.pos"] = 0.0
+            obs_buffer.append(fake)
+    else:
+        for _ in range(obs_horizon):
+            obs_buffer.append(robot.get_observation())
+
+    print("Inference loop started. Press Ctrl-C to stop.")
+
+    while True:
+        t0 = time.perf_counter()
+
+        if not dry_run:
+            obs_buffer.append(robot.get_observation())
+
+        batch = _preprocess_obs_buffer(obs_buffer, camera_key_map, motor_names, image_size, device)
+
+        with torch.no_grad():
+            actions = model.predict_actions(batch)  # (1, pred_horizon, action_dim)
+
+        latency_ms = (time.perf_counter() - t0) * 1000
+        latencies.append(latency_ms)
+
+        arr = list(latencies)
+        mean_lat = float(np.mean(arr))
+        p95_lat = float(np.percentile(arr, 95))
+        print(f"inference {latency_ms:.1f} ms | mean {mean_lat:.1f} | p95 {p95_lat:.1f}")
+
+        chunk = actions[0]  # (pred_horizon, action_dim)
+        for i in range(exec_horizon):
+            step_t0 = time.perf_counter()
+            if not dry_run:
+                action_vec = chunk[i].cpu().numpy()
+                action_dict = {f"{m}.pos": float(v) for m, v in zip(motor_names, action_vec)}
+                robot.send_action(action_dict)
+            elapsed = time.perf_counter() - step_t0
+            remaining = step_duration - elapsed
+            if remaining > 0:
+                time.sleep(remaining)
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Real-time Diffusion Policy inference on SO-ARM101.")
+    parser.add_argument("--checkpoint", required=True, help="Path to EMA checkpoint .pt file.")
+    parser.add_argument("--config", required=True, help="Path to run config.yaml.")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Skip robot connect/send; run inference on synthetic observations.",
+    )
+    args, overrides = parser.parse_known_args(argv)
+
+    cfg = load_config(args.config, overrides or None)
+
+    # Override sampler to DDIM with the configured step count.
+    cfg = OmegaConf.merge(cfg, OmegaConf.create({
+        "diffusion": {
+            "sampler": "ddim",
+            "num_inference_steps": int(cfg.infer.num_ddim_steps),
+        }
+    }))
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Device: {device}")
+
+    # run_dir is the parent of the checkpoints/ directory.
+    run_dir = Path(args.checkpoint).parent.parent
+
+    model = _build_inference_model(cfg, run_dir)
+
+    ckpt = torch.load(args.checkpoint, map_location=device, weights_only=True)
+    model.load_state_dict(ckpt["ema"])
+    model = model.to(device)
+    model.eval()
+
+    if cfg.infer.compile:
+        print("Compiling model with torch.compile (~30 s one-time warmup)...")
+        model = torch.compile(model)
+
+    if not args.dry_run:
+        cameras = {
+            name: OpenCVCameraConfig(
+                index_or_path=cam_cfg.path,
+                width=cam_cfg.width,
+                height=cam_cfg.height,
+                fps=cam_cfg.fps,
+                fourcc=cam_cfg.fourcc,
+                backend=cam_cfg.backend,
+            )
+            for name, cam_cfg in cfg.infer.cameras.items()
+        }
+        robot_cfg = SOFollowerRobotConfig(port=cfg.infer.robot_port, cameras=cameras)
+        robot = SOFollower(robot_cfg)
+        robot.connect(calibrate=False)
+        motor_names = list(robot.bus.motor_names)
+        print(f"Robot connected. Motors: {motor_names}")
+    else:
+        robot = None
+        state_norm = Normalizer.from_file(run_dir / "state_normalizer.json")
+        state_dim = int(state_norm.mins.shape[0])
+        motor_names = [f"motor_{i}" for i in range(state_dim)]
+        print(f"Dry-run mode. Simulating {state_dim} motors, {list(cfg.infer.cameras)!r} cameras.")
+
+    try:
+        _run_loop(cfg, model, robot, motor_names, args.dry_run, device)
+    except KeyboardInterrupt:
+        print("\nStopped by user.")
+    finally:
+        if robot is not None:
+            robot.disconnect()
+            print("Robot disconnected.")
 
 
 if __name__ == "__main__":
