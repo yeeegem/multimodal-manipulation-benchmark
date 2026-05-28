@@ -43,55 +43,77 @@ uv sync --extra dev         # also installs pytest and ruff
 
 ## Reproduction
 
-### 1. Verify the data pipeline
+### 1. Pre-extract video frames (one-time, ~10 min)
+
+Decodes all videos to numpy arrays so the training hot-path is pure RAM/disk reads —
+no per-batch video decoding. Safe to interrupt and re-run (skips completed episodes).
 
 ```bash
-uv run python -m diffusion_policy_soarm.data.visualize_batch \
+uv run python -m diffusion_policy_soarm.scripts.preextract_frames \
     --config diffusion_policy_soarm/configs/base.yaml
 ```
 
-Expected output: tensor shapes printed to stdout, `batch_sample.png` saved showing
-front-camera frames and action joint trajectories.
+Cache is written to `recordings/redcubes_bluecup/frame_cache/`.
+At 96×96 (~0.9 GB) it is loaded fully into RAM at dataset init (`preload_cache: true`).
 
-### 2. Run the Phase 4 overfit gate (5 demos)
-
-```bash
-uv run python -m diffusion_policy_soarm.scripts.overfit_check \
-    --config diffusion_policy_soarm/configs/base.yaml
-```
-
-Expected: loss drops to < 0.001 and DDPM samples reproduce the 5 trajectories.
-
-### 3. Full training
+### 2. Full training
 
 ```bash
 uv run python -m diffusion_policy_soarm.train \
     --config diffusion_policy_soarm/configs/base.yaml \
-    training.run_dir=runs
+    training.experiment=main_96x96
 ```
 
-Resolved config and git hash are saved to `runs/<timestamp>/`.
+Runs are saved to `runs/<experiment>/<YYYYMMDD_HHMMSS>/`.
+Each run directory contains `config.yaml`, `git_hash.txt`, `tb/` (TensorBoard),
+and `checkpoints/` with `best.pt` and `latest.pt`.
 
-### 4. Ablations
+**Resume an interrupted run:**
+```bash
+uv run python -m diffusion_policy_soarm.train \
+    --config diffusion_policy_soarm/configs/base.yaml \
+    training.experiment=main_96x96 \
+    --resume runs/main_96x96/<timestamp>
+```
+
+**Monitor training:**
+```bash
+uv run tensorboard --logdir runs/
+# open http://localhost:6006
+```
+
+### 3. Ablations
 
 ```bash
+# High-resolution (480x640) — re-extract cache first with high_res override
+uv run python -m diffusion_policy_soarm.scripts.preextract_frames \
+    --config diffusion_policy_soarm/configs/base.yaml \
+    --override diffusion_policy_soarm/configs/ablations/high_res.yaml
+
+uv run python -m diffusion_policy_soarm.train \
+    --config diffusion_policy_soarm/configs/base.yaml \
+    --override diffusion_policy_soarm/configs/ablations/high_res.yaml \
+    training.experiment=ablation_high_res
+
 # Transformer backbone
 uv run python -m diffusion_policy_soarm.train \
     --config diffusion_policy_soarm/configs/base.yaml \
-    --override diffusion_policy_soarm/configs/ablations/transformer_backbone.yaml
+    --override diffusion_policy_soarm/configs/ablations/transformer_backbone.yaml \
+    training.experiment=ablation_transformer
 
-# DDIM 10-step sampler (weights from the base run)
+# DDIM fast sampler
 uv run python -m diffusion_policy_soarm.train \
     --config diffusion_policy_soarm/configs/base.yaml \
-    --override diffusion_policy_soarm/configs/ablations/ddim_sampler.yaml
+    --override diffusion_policy_soarm/configs/ablations/ddim_sampler.yaml \
+    training.experiment=ablation_ddim
 ```
 
-### 5. Inference on the arm
+### 4. Inference on the arm
 
 ```bash
 uv run python -m diffusion_policy_soarm.infer \
-    --checkpoint runs/<run>/checkpoints/ema_latest.pt \
-    --config runs/<run>/config.yaml
+    --checkpoint runs/<experiment>/<timestamp>/checkpoints/best.pt \
+    --config runs/<experiment>/<timestamp>/config.yaml
 ```
 
 ---
