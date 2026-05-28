@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import TypedDict
 
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn.functional as F
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
@@ -131,17 +132,12 @@ class DiffusionDataset(Dataset):
             self._global_ep_idx[f:t] = ep_idx
             self._global_local_off[f:t] = np.arange(t - f, dtype=np.int32)
 
-        # Lightweight LeRobot instance for state + action only (no video decoding).
-        obs_delta = [-(self.obs_horizon - 1 - i) / fps for i in range(self.obs_horizon)]
-        act_delta = [i / fps for i in range(self.pred_horizon)]
-        self._sa_ds = LeRobotDataset(
-            repo_id=dataset_path.name,
-            root=dataset_path,
-            download_videos=False,
-            video_backend="pyav",
-            delta_timestamps={self.state_key: obs_delta, self.action_key: act_delta},
-            tolerance_s=0.5 / fps,
-        )
+        # Pre-cache state and action from parquet — eliminates all LeRobot __getitem__
+        # overhead in the training hot-path. State+action are ~1.5 MB total.
+        data_files = sorted((dataset_path / "data").rglob("*.parquet"), key=str)
+        df = pd.concat([pd.read_parquet(f) for f in data_files]).sort_values("index")
+        self._state_cache: np.ndarray = np.stack(df[self.state_key].values).astype(np.float32)
+        self._action_cache: np.ndarray = np.stack(df[self.action_key].values).astype(np.float32)
 
     def _compute_valid_indices(
         self, ds: LeRobotDataset, episode_ids: list[int] | None
@@ -196,13 +192,13 @@ class DiffusionDataset(Dataset):
             frames_t = torch.from_numpy(frames_np.copy()).permute(0, 3, 1, 2).float().div_(255.0)
             images[cam_key] = self._resize(frames_t)
 
-        # State + action from the lightweight (no-video) LeRobot instance.
-        raw = self._sa_ds[global_idx]
-        return Batch(
-            images=images,
-            state=raw[self.state_key],
-            actions=raw[self.action_key],
+        ep_from = self._lerobot_ds.meta.episodes[ep_idx]["dataset_from_index"]
+        obs_globals = [ep_from + j for j in obs_locals]
+        state = torch.from_numpy(self._state_cache[obs_globals].copy())
+        actions = torch.from_numpy(
+            self._action_cache[global_idx : global_idx + self.pred_horizon].copy()
         )
+        return Batch(images=images, state=state, actions=actions)
 
     def _resize(self, frames: torch.Tensor) -> torch.Tensor:
         """Resize (T, C, H, W) frames to (T, C, *image_size).
