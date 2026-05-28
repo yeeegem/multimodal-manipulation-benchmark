@@ -275,7 +275,7 @@ def run_training(
 
     # --- AMP ----------------------------------------------------------------
     use_amp: bool = cfg.training.use_amp and device.type == "cuda"
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
     # --- Logging ------------------------------------------------------------
     writer = SummaryWriter(run_dir / "tb")

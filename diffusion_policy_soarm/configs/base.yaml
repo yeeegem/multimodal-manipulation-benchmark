@@ -71,7 +71,7 @@ denoiser:
 training:
   seed: 42
   experiment: ""            # set per run: e.g. main_96x96, ablation_high_res
-  batch_size: 64            # 96x96 images are 33x smaller — much more headroom vs 480x640
+  batch_size: 256           # 96x96 images are tiny; large batch keeps GPU saturated
   num_workers: 6            # 6 of 16 logical cores; rest for GPU transfer + main process
   num_epochs: 300
   lr: 1.0e-4
