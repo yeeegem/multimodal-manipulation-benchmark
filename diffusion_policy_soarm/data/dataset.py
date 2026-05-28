@@ -103,6 +103,7 @@ class DiffusionDataset(Dataset):
         # PyAV video decoding to keep the GPU fed at ~100%.
         cache_dir = dataset_path / "frame_cache"
         self._use_cache = cache_dir.exists()
+        self._preload_cache: bool = bool(getattr(cfg.dataset, "preload_cache", False))
         if self._use_cache:
             self._init_frame_cache(cache_dir, dataset_path, fps)
 
@@ -110,13 +111,14 @@ class DiffusionDataset(Dataset):
         """Load per-episode mmap arrays and build a state/action-only LeRobot instance."""
         total_eps = self._lerobot_ds.meta.total_episodes
 
-        # Memory-mapped frame arrays: {cam_key: [ep0_mmap, ep1_mmap, ...]}
+        # Load frame arrays: fully into RAM (preload_cache=true) or memory-mapped.
+        load_mode = None if self._preload_cache else "r"
         self._frame_mmaps: dict[str, list[np.ndarray]] = {}
         for cam_key in self.camera_keys:
             safe_key = cam_key.replace("/", ".")
             cam_dir = cache_dir / safe_key
             self._frame_mmaps[cam_key] = [
-                np.load(str(cam_dir / f"episode_{i:06d}.npy"), mmap_mode="r")
+                np.load(str(cam_dir / f"episode_{i:06d}.npy"), mmap_mode=load_mode)
                 for i in range(total_eps)
             ]
 
@@ -192,7 +194,7 @@ class DiffusionDataset(Dataset):
             # (T, H, W, 3) uint8 → (T, C, H, W) float32 in [0, 1]
             frames_np = np.stack([mmap[j] for j in obs_locals])
             frames_t = torch.from_numpy(frames_np.copy()).permute(0, 3, 1, 2).float().div_(255.0)
-            images[cam_key] = frames_t
+            images[cam_key] = self._resize(frames_t)
 
         # State + action from the lightweight (no-video) LeRobot instance.
         raw = self._sa_ds[global_idx]

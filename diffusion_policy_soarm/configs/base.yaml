@@ -12,9 +12,11 @@ dataset:
   fps: 30
   # Images are resized to this (H, W) before being fed to the encoder.
   # ResNet18 expects at least 32x32; 96x96 balances fidelity and memory.
-  # Native camera resolution — no downsampling (16 GPUs, no memory pressure).
   # ResNet18 handles arbitrary spatial sizes via global average pool.
-  image_size: [480, 640]
+  image_size: [96, 96]
+  # Load pre-extracted frame cache into RAM (true) or memory-map it (false).
+  # At 96x96 the cache is ~0.9 GB — fits in RAM, eliminates all disk I/O during training.
+  preload_cache: true
 
 model:
   # T_o: how many consecutive observation frames form one conditioning input.
@@ -68,8 +70,9 @@ denoiser:
 
 training:
   seed: 42
-  batch_size: 32
-  num_workers: 4
+  experiment: ""            # set per run: e.g. main_96x96, ablation_high_res
+  batch_size: 64            # 96x96 images are 33x smaller — much more headroom vs 480x640
+  num_workers: 6            # 6 of 16 logical cores; rest for GPU transfer + main process
   num_epochs: 300
   lr: 1.0e-4
   weight_decay: 1.0e-6
@@ -80,8 +83,7 @@ training:
   ema_decay: 0.9999
   grad_clip: 1.0
   log_every: 100            # gradient steps between TensorBoard log writes
-  save_every: 10            # epochs between checkpoint saves
-  # Base directory for run outputs; actual run dir is run_dir/TIMESTAMP_hash.
+  # Base directory for run outputs; layout: run_dir/experiment/YYYYMMDD_HHMMSS/
   run_dir: "runs"
   # AMP reduces memory usage and speeds up training on modern GPUs.
   use_amp: true

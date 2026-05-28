@@ -32,12 +32,18 @@ def merge_config(base: DictConfig, override_path: str | Path) -> DictConfig:
 
 
 def resolve_run_dir(cfg: DictConfig) -> Path:
-    """Create a timestamped, git-hash-tagged run directory.
+    """Create a timestamped run directory.
 
-    The directory name is ``<run_dir>/<YYYYMMDD_HHMMSS>_<short_hash>``.
+    Layout:
+    - With experiment name: ``<run_dir>/<experiment>/<YYYYMMDD_HHMMSS>/``
+    - Without:              ``<run_dir>/<YYYYMMDD_HHMMSS>/``
+
+    The git hash is saved inside the directory (``git_hash.txt``), not in the name.
     """
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = Path(cfg.training.run_dir) / f"{timestamp}_{_git_hash()}"
+    experiment = getattr(cfg.training, "experiment", "") or ""
+    base = Path(cfg.training.run_dir)
+    run_dir = base / experiment / timestamp if experiment else base / timestamp
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_dir
 

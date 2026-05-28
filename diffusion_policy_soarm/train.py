@@ -14,7 +14,12 @@ from __future__ import annotations
 import argparse
 import copy
 import math
+import os
+import warnings
 from pathlib import Path
+
+os.environ.setdefault("PYTHONWARNINGS", "ignore::UserWarning:torchvision")
+warnings.filterwarnings("ignore", category=UserWarning, module="torchvision")
 
 import torch
 import torch.nn as nn
@@ -219,6 +224,8 @@ def run_training(
     print(f"Training samples: {len(ds)}")
 
     # persistent_workers=False: PyAV video decoding deadlocks with persistent workers.
+    # Use persistent workers only when frame cache is active (no PyAV in workers).
+    persistent = ds._use_cache and cfg.training.num_workers > 0
     loader = DataLoader(
         ds,
         batch_size=cfg.training.batch_size,
@@ -226,7 +233,7 @@ def run_training(
         num_workers=cfg.training.num_workers,
         pin_memory=device.type == "cuda",
         drop_last=True,
-        persistent_workers=False,
+        persistent_workers=persistent,
         prefetch_factor=2 if cfg.training.num_workers > 0 else None,
     )
 
@@ -316,11 +323,6 @@ def run_training(
         if mean_loss < best_loss:
             best_loss = mean_loss
             save_checkpoint(run_dir, "best", model, ema, optimizer, scheduler, epoch, step)
-
-        if (epoch + 1) % cfg.training.save_every == 0:
-            save_checkpoint(
-                run_dir, f"epoch_{epoch+1:04d}", model, ema, optimizer, scheduler, epoch, step
-            )
 
         save_checkpoint(run_dir, "latest", model, ema, optimizer, scheduler, epoch, step)
 
