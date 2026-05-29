@@ -241,10 +241,14 @@ def main(argv: list[str] | None = None) -> None:
             )
             for name, cam_cfg in cfg.infer.cameras.items()
         }
-        robot_cfg = SOFollowerRobotConfig(port=cfg.infer.robot_port, cameras=cameras)
+        robot_cfg = SOFollowerRobotConfig(
+            port=cfg.infer.robot_port,
+            id=cfg.infer.robot_id,
+            cameras=cameras,
+        )
         robot = SOFollower(robot_cfg)
-        robot.connect(calibrate=False)
-        motor_names = list(robot.bus.motor_names)
+        robot.connect()
+        motor_names = list(robot.bus.motors.keys())
         print(f"Robot connected. Motors: {motor_names}")
     else:
         robot = None
