@@ -3,7 +3,7 @@
 # Override base.yaml for re-running or resuming this ablation.
 dataset:
   image_size: [480, 640]
-  preload_cache: false      # 30 GB won't fit in RAM; use mmap
+  preload_cache: true      # preload images in RAM
 
 training:
   batch_size: 16            # safe for 16 GB VRAM at native resolution with AMP

@@ -66,14 +66,25 @@ def _preprocess_obs_buffer(
 ) -> dict:
     """Convert a deque of raw robot obs dicts into a model-ready batch.
 
-    Camera images are (H, W, C) uint8 numpy arrays keyed by robot camera
-    short name (e.g. "front").  Motor positions are floats keyed as
-    "<motor_name>.pos".  Both are converted to float32 tensors on *device*.
+    Each element of *obs_buffer* is a single flat dict returned by
+    ``robot.get_observation()`` containing both camera frames and motor
+    positions, e.g.::
+
+        {
+          "front":              np.ndarray (H_raw, W_raw, 3) uint8,
+          "wrist":              np.ndarray (H_raw, W_raw, 3) uint8,
+          "shoulder_pan.pos":   12.3,
+          "shoulder_lift.pos": -45.7,
+          ...
+        }
 
     Args:
         obs_buffer: Deque of length obs_horizon, each element a dict from
-            robot.get_observation().
-        camera_key_map: Maps robot camera short name → dataset feature key.
+            ``robot.get_observation()``.
+        camera_key_map: Maps the robot's short camera name (e.g. "front") →
+            the dataset feature key (e.g. "observation.images.front") that
+            the encoder's per-camera ResNet was registered under during
+            training.
         motor_names: Ordered motor names matching the training state vector.
         image_size: Target (H, W) to resize camera frames to.
         device: Target device for output tensors.
@@ -83,21 +94,44 @@ def _preprocess_obs_buffer(
           "images": {dataset_key: (1, T_o, C, H, W) float32}
           "state":  (1, T_o, state_dim) float32
     """
-    h, w = image_size
+    target_h, target_w = image_size
 
+    # One (1, T_o, C, H, W) tensor per camera, keyed by the dataset feature
+    # name the encoder expects.
     images: dict[str, torch.Tensor] = {}
-    for robot_name, ds_key in camera_key_map.items():
-        frames = []
+    for cam_name, dataset_key in camera_key_map.items():
+        # Walk the obs_horizon-long rolling buffer to stack this camera's
+        # frames in temporal order: index 0 = oldest, -1 = newest.
+        frames: list[torch.Tensor] = []
         for obs in obs_buffer:
-            frame = obs[robot_name]  # (H_raw, W_raw, C) uint8 numpy
-            t = torch.from_numpy(np.ascontiguousarray(frame)).permute(2, 0, 1).float().div_(255.0)
-            frames.append(t)
-        stacked = torch.stack(frames, dim=0)  # (T_o, C, H_raw, W_raw)
-        if stacked.shape[-2:] != (h, w):
-            stacked = F.interpolate(stacked, size=(h, w), mode="bilinear", align_corners=False)
-        images[ds_key] = stacked.unsqueeze(0).to(device)  # (1, T_o, C, h, w)
+            # uint8 HWC numpy → float32 CHW tensor in [0, 1].
+            # The encoder applies ImageNet normalisation internally.
+            raw_frame = obs[cam_name]
+            frame = (
+                torch.from_numpy(np.ascontiguousarray(raw_frame))
+                .permute(2, 0, 1)
+                .float()
+                .div_(255.0)
+            )
+            frames.append(frame)
 
-    state_frames = []
+        # (T_o, C, H_raw, W_raw)
+        stacked = torch.stack(frames, dim=0)
+
+        # Cameras capture at 480x640; the encoder was trained on 96x96.
+        # Skip the interpolate call when shapes already match (dry-run uses
+        # synthetic frames already at target size).
+        if stacked.shape[-2:] != (target_h, target_w):
+            stacked = F.interpolate(
+                stacked, size=(target_h, target_w), mode="bilinear", align_corners=False
+            )
+
+        # Prepend batch dim → (1, T_o, C, H, W) and move to GPU.
+        images[dataset_key] = stacked.unsqueeze(0).to(device)
+
+    # State vector: one row per buffered observation, columns in motor_names
+    # order so dimension i always means the same joint as during training.
+    state_frames: list[torch.Tensor] = []
     for obs in obs_buffer:
         positions = [float(obs[f"{m}.pos"]) for m in motor_names]
         state_frames.append(torch.tensor(positions, dtype=torch.float32))
@@ -175,6 +209,10 @@ def _run_loop(
         print(f"inference {latency_ms:.1f} ms | mean {mean_lat:.1f} | p95 {p95_lat:.1f}")
 
         chunk = actions[0]  # (pred_horizon, action_dim)
+
+        # print("actions:", actions[0, :4].cpu().numpy())  # first 4 steps
+        # print("state:  ", batch["state"][0, -1].cpu().numpy())  # current position
+
         for i in range(exec_horizon):
             step_t0 = time.perf_counter()
             if not dry_run:
