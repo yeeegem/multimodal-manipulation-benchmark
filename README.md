@@ -1,8 +1,6 @@
 # Multimodal Manipulation Benchmark
 
-A from-scratch PyTorch reimplementation of Diffusion Policy (Chi et al., 2023),
-applied to a deliberately bimodal pick-and-place task on an SO-ARM101 arm.
-See "Project plan and status" for the current phase of the build.
+A reproducible benchmark for evaluating multimodal imitation-learning policies on an SO-ARM101 arm. Reimplements Diffusion Policy (Chi et al., 2023) from scratch in PyTorch and compares it against behaviour-cloning and transformer-based action policies on a deliberately bimodal pick-and-place task, with quantitative metrics for success rate, mode commitment, midpoint collapse and robustness to layout perturbations.
 
 ---
 
