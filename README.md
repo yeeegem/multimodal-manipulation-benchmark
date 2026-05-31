@@ -5,7 +5,6 @@
 [![Diffusion Policy](https://img.shields.io/badge/method-Diffusion%20Policy-8b5cf6)](https://diffusion-policy.cs.columbia.edu/)
 [![Imitation Learning](https://img.shields.io/badge/task-Imitation%20Learning-0ea5e9)]()
 [![Dataset](https://img.shields.io/badge/HuggingFace-yeeegem%2Fredcubes__bluecup-ffd21e?logo=huggingface&logoColor=black)](https://huggingface.co/datasets/yeeegem/redcubes_bluecup)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 A reproducible benchmark for evaluating multimodal imitation-learning policies on an SO-ARM101 arm. Reimplements Diffusion Policy (Chi et al., 2023) from scratch in PyTorch and compares it against behaviour-cloning and transformer-based action policies on a deliberately bimodal pick-and-place task, with quantitative metrics for success rate, mode commitment, midpoint collapse and robustness to layout perturbations.
 
