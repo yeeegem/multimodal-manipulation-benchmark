@@ -3,7 +3,7 @@ name = "diffusion-policy-soarm"
 version = "0.1.0"
 description = "Diffusion Policy reimplementation for SO-ARM101 multimodal pick-and-place"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = "==3.13.*"
 dependencies = [
     "torch>=2.3.0",
     "torchvision>=0.18.0",
