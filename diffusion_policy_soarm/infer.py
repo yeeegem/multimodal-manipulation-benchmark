@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import logging
 import time
 from pathlib import Path
 
@@ -141,6 +142,28 @@ def _preprocess_obs_buffer(
 
 
 # ---------------------------------------------------------------------------
+# Safety cap helpers
+# ---------------------------------------------------------------------------
+
+def _build_cap_array(cap, motor_names: list[str]) -> np.ndarray | None:
+    """Resolve cfg.infer.max_relative_target into a per-joint cap in degrees.
+
+    Accepts a scalar (broadcast to all joints), a dict (per-motor; joints not
+    listed default to +inf so they are effectively uncapped), or None
+    (feature disabled).
+    """
+    if cap is None:
+        return None
+    if isinstance(cap, (int, float)):
+        return np.full(len(motor_names), float(cap), dtype=np.float32)
+    arr = np.full(len(motor_names), np.inf, dtype=np.float32)
+    for i, m in enumerate(motor_names):
+        if m in cap:
+            arr[i] = float(cap[m])
+    return arr
+
+
+# ---------------------------------------------------------------------------
 # Control loop
 # ---------------------------------------------------------------------------
 
@@ -187,6 +210,23 @@ def _run_loop(
         for _ in range(obs_horizon):
             obs_buffer.append(robot.get_observation())
 
+    # Resolve the per-joint delta cap. None disables the clip path entirely.
+    cap_arr = _build_cap_array(
+        OmegaConf.select(cfg, "infer.max_relative_target", default=None),
+        motor_names,
+    )
+
+    # Initialise prev_action from the current arm pose so the first commanded
+    # position is bounded relative to reality, not zeros. In dry-run there is
+    # no real arm so the clip path is skipped.
+    prev_action: np.ndarray | None = None
+    if cap_arr is not None and not dry_run:
+        latest_obs = obs_buffer[-1]
+        prev_action = np.array(
+            [float(latest_obs[f"{m}.pos"]) for m in motor_names],
+            dtype=np.float32,
+        )
+
     print("Inference loop started. Press Ctrl-C to stop.")
 
     while True:
@@ -216,7 +256,24 @@ def _run_loop(
         for i in range(exec_horizon):
             step_t0 = time.perf_counter()
             if not dry_run:
-                action_vec = chunk[i].cpu().numpy()
+                action_vec = chunk[i].cpu().numpy().astype(np.float32)
+
+                # Per-step delta cap against the last *commanded* position.
+                # Uses no extra serial reads (unlike LeRobot's max_relative_target
+                # path which reads Present_Position every send_action).
+                if cap_arr is not None:
+                    delta = action_vec - prev_action
+                    clipped = np.clip(delta, -cap_arr, cap_arr)
+                    mask = np.abs(delta - clipped) > 1e-4
+                    if mask.any():
+                        for j in np.where(mask)[0]:
+                            print(
+                                f"  clip {motor_names[j]}: "
+                                f"requested delta {delta[j]:+.2f} deg -> {clipped[j]:+.2f} deg"
+                            )
+                    action_vec = prev_action + clipped
+                    prev_action = action_vec
+
                 action_dict = {f"{m}.pos": float(v) for m, v in zip(motor_names, action_vec)}
                 robot.send_action(action_dict)
             elapsed = time.perf_counter() - step_t0
@@ -230,6 +287,12 @@ def _run_loop(
 # ---------------------------------------------------------------------------
 
 def main(argv: list[str] | None = None) -> None:
+    # Surface LeRobot's own logging (camera/motor warnings) at a known level.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
     parser = argparse.ArgumentParser(description="Real-time Diffusion Policy inference on SO-ARM101.")
     parser.add_argument("--checkpoint", required=True, help="Path to EMA checkpoint .pt file.")
     parser.add_argument("--config", required=True, help="Path to run config.yaml.")
@@ -288,6 +351,14 @@ def main(argv: list[str] | None = None) -> None:
         robot.connect()
         motor_names = list(robot.bus.motors.keys())
         print(f"Robot connected. Motors: {motor_names}")
+
+        # Lower the Feetech firmware-side acceleration ramp so commanded deltas
+        # execute more gently. Persists until power cycle.
+        accel = OmegaConf.select(cfg, "infer.motor_acceleration", default=None)
+        if accel is not None:
+            for motor in motor_names:
+                robot.bus.write("Acceleration", motor, int(accel))
+            print(f"Wrote Acceleration={int(accel)} to all {len(motor_names)} motors.")
     else:
         robot = None
         state_norm = Normalizer.from_file(run_dir / "state_normalizer.json")

@@ -128,7 +128,19 @@ infer:
   camera_key_map:
     front: "observation.images.front"
     wrist: "observation.images.wrist"
-  # DDIM steps at inference — 10 steps is ~10× faster than full DDPM (100 steps).
+  # DDIM steps at inference. 10 steps is ~10x faster than full DDPM (100 steps).
   num_ddim_steps: 10
   # torch.compile: ~30 s one-time warmup, then faster inference on repeated calls.
   compile: true
+  # Per-step delta cap in degrees per joint. Each commanded position is clipped
+  # so |new - last_commanded| <= max_relative_target before being sent to the arm.
+  # Implemented in pure software against the previously commanded vector, so it
+  # adds no extra serial reads (unlike LeRobot's built-in max_relative_target
+  # path which adds one sync_read per send_action). Set null to disable.
+  # 5.0 deg/tick at 30 fps gives ~150 deg/s max joint speed.
+  max_relative_target: 5.0
+  # Feetech Acceleration register (raw 0-255). Default ~254 makes motors ramp
+  # at near-max rate. Lower values (32-64) make commanded deltas execute more
+  # slowly at the firmware level. Written to every motor after robot.connect();
+  # persists until power cycle. Set null to leave at the firmware default.
+  motor_acceleration: 64
