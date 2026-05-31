@@ -4,6 +4,9 @@
 
 dataset:
   path: "recordings/redcubes_bluecup"
+  # HuggingFace Hub repo ID. LeRobot downloads metadata and videos from here
+  # automatically when the local path is absent. Set to null to disable.
+  hf_repo_id: "yeeegem/redcubes_bluecup"
   camera_keys:
     - "observation.images.front"
     - "observation.images.wrist"

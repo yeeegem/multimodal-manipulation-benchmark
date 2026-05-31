@@ -5,7 +5,7 @@ __pycache__/
 dist/
 .venv/
 
-frame_cache/
+recordings/
 
 # uv
 uv.lock

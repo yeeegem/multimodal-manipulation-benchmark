@@ -18,6 +18,7 @@ Usage:
         [--num-workers N]   # default: all CPU cores
 
 Safe to interrupt and re-run: episodes with existing .npy files are skipped.
+Videos are downloaded from HuggingFace Hub automatically if not present locally.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ from pathlib import Path
 
 import numpy as np
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from omegaconf import DictConfig, OmegaConf
 from PIL import Image
 from tqdm import tqdm
 
@@ -44,20 +46,20 @@ _target_hw: tuple[int, int] = (480, 640)
 _cache_dir: Path = Path()
 
 
-def _worker_init(cfg_path: str, overrides: list[str] | None) -> None:
+def _worker_init(cfg: DictConfig) -> None:
     global _ds, _camera_keys, _target_hw, _cache_dir
 
-    cfg = load_config(cfg_path, overrides)
     dataset_path = Path(cfg.dataset.path)
+    hf_repo_id: str = OmegaConf.select(cfg, "dataset.hf_repo_id", default=dataset_path.name)
     _camera_keys = list(cfg.dataset.camera_keys)
     _target_hw = tuple(cfg.dataset.image_size)  # type: ignore[assignment]
     _cache_dir = dataset_path / "frame_cache"
     fps: float = cfg.dataset.fps
 
     _ds = LeRobotDataset(
-        repo_id=dataset_path.name,
+        repo_id=hf_repo_id,
         root=dataset_path,
-        download_videos=False,
+        download_videos=True,
         video_backend="pyav",
         delta_timestamps={cam_key: [0.0] for cam_key in _camera_keys},
         tolerance_s=0.5 / fps,
@@ -87,7 +89,7 @@ def _extract_episode(ep_idx: int) -> int:
         for cam_key in _camera_keys:
             frame_chw = sample[cam_key]
             if frame_chw.ndim == 4:
-                frame_chw = frame_chw[0]  # (1, C, H, W) → (C, H, W)
+                frame_chw = frame_chw[0]  # (1, C, H, W) -> (C, H, W)
             frame_u8 = (frame_chw.permute(1, 2, 0).clamp(0.0, 1.0).numpy() * 255.0).astype(np.uint8)
             if frame_u8.shape[:2] != (h, w):
                 frame_u8 = np.asarray(
@@ -106,33 +108,42 @@ def _extract_episode(ep_idx: int) -> int:
 # Entry point
 # ---------------------------------------------------------------------------
 
-def preextract(cfg_path: str, overrides: list[str] | None, num_workers: int) -> None:
-    cfg = load_config(cfg_path, overrides)
+def preextract(cfg: DictConfig, num_workers: int) -> None:
+    """Extract frames for all episodes. Downloads videos from HF Hub if needed.
+
+    Order: HF Hub video download -> frame extraction -> done.
+    train.py calls this automatically when frame_cache/ is absent.
+
+    Args:
+        cfg: Resolved OmegaConf config.
+        num_workers: Number of parallel worker processes. Pass os.cpu_count()
+            to saturate all cores.
+    """
     dataset_path = Path(cfg.dataset.path)
+    hf_repo_id: str = OmegaConf.select(cfg, "dataset.hf_repo_id", default=dataset_path.name)
     camera_keys: list[str] = list(cfg.dataset.camera_keys)
 
     cache_dir = dataset_path / "frame_cache"
     for cam_key in camera_keys:
         (cache_dir / cam_key.replace("/", ".")).mkdir(parents=True, exist_ok=True)
 
-    # Peek at episode count without full init
-    from lerobot.datasets.lerobot_dataset import LeRobotDataset as _LR
-    _meta_ds = _LR(
-        repo_id=dataset_path.name,
+    # Download videos from HF Hub if not present locally, then peek at episode count.
+    _meta_ds = LeRobotDataset(
+        repo_id=hf_repo_id,
         root=dataset_path,
-        download_videos=False,
+        download_videos=True,
         video_backend="pyav",
     )
     total_episodes: int = _meta_ds.meta.total_episodes
     del _meta_ds
 
-    print(f"Extracting {total_episodes} episodes × {len(camera_keys)} cameras "
-          f"with {num_workers} workers → {cache_dir}")
+    print(f"Extracting {total_episodes} episodes x {len(camera_keys)} cameras "
+          f"with {num_workers} workers -> {cache_dir}")
 
     with Pool(
         processes=num_workers,
         initializer=_worker_init,
-        initargs=(cfg_path, overrides),
+        initargs=(cfg,),
     ) as pool:
         for _ in tqdm(
             pool.imap_unordered(_extract_episode, range(total_episodes)),
@@ -149,7 +160,8 @@ def main() -> None:
     parser.add_argument("--config", required=True)
     parser.add_argument("--num-workers", type=int, default=os.cpu_count())
     args, overrides = parser.parse_known_args()
-    preextract(args.config, overrides or None, args.num_workers)
+    cfg = load_config(args.config, overrides or None)
+    preextract(cfg, args.num_workers)
 
 
 if __name__ == "__main__":

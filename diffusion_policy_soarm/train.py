@@ -31,6 +31,7 @@ from diffusion_policy_soarm.data.dataset import DiffusionDataset
 from diffusion_policy_soarm.data.normalization import build_normalizers
 from diffusion_policy_soarm.models.diffusion import DiffusionModule, build_denoiser
 from diffusion_policy_soarm.models.encoders import ObservationEncoder
+from diffusion_policy_soarm.scripts.preextract_frames import preextract
 from diffusion_policy_soarm.utils.config import (
     load_config,
     merge_config,
@@ -218,6 +219,12 @@ def run_training(
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
+
+    # --- Frame cache check --------------------------------------------------
+    cache_dir = Path(cfg.dataset.path) / "frame_cache"
+    if not cache_dir.exists():
+        print("Frame cache not found. Running preextract_frames automatically...")
+        preextract(cfg, num_workers=os.cpu_count())
 
     # --- Dataset & dataloader -----------------------------------------------
     ds = DiffusionDataset(cfg, episode_ids=episode_ids)

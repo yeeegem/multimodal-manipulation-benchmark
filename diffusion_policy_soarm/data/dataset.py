@@ -15,6 +15,7 @@ Design decisions:
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import TypedDict
 
@@ -22,8 +23,9 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn.functional as F
+from huggingface_hub.errors import RepositoryNotFoundError
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import Dataset
 
 
@@ -87,14 +89,23 @@ class DiffusionDataset(Dataset):
         }
 
         dataset_path = Path(cfg.dataset.path)
-        self._lerobot_ds = LeRobotDataset(
-            repo_id=dataset_path.name,
-            root=dataset_path,
-            download_videos=False,
-            video_backend="pyav",
-            delta_timestamps=delta_timestamps,
-            tolerance_s=0.5 / fps,
-        )
+        hf_repo_id: str = OmegaConf.select(cfg, "dataset.hf_repo_id", default=dataset_path.name)
+        try:
+            self._lerobot_ds = LeRobotDataset(
+                repo_id=hf_repo_id,
+                root=dataset_path,
+                download_videos=True,
+                video_backend="pyav",
+                delta_timestamps=delta_timestamps,
+                tolerance_s=0.5 / fps,
+            )
+        except (RepositoryNotFoundError, FileNotFoundError) as exc:
+            print(
+                f"\nERROR: Dataset not found locally at '{dataset_path}' "
+                f"and HF Hub repo '{hf_repo_id}' was not accessible.\n"
+                f"Check dataset.hf_repo_id in your config. Details: {exc}\n"
+            )
+            sys.exit(1)
 
         # Build valid index list: exclude the last (pred_horizon - 1) frames of each
         # episode so every sample has a complete, unpadded action chunk.
