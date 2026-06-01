@@ -155,6 +155,27 @@ def q_sample(
     return sqrt_a * x_0 + sqrt_1ma * noise, noise
 
 
+def shift_action_chunk_for_warm_start(
+    action_chunk: torch.Tensor,
+    exec_horizon: int,
+) -> torch.Tensor:
+    """Shift a clean action chunk forward by ``exec_horizon`` steps.
+
+    The unexecuted suffix is preserved and the tail is padded by repeating the
+    final action so the next chunk starts from the previous plan's continuation.
+    """
+    if exec_horizon <= 0:
+        return action_chunk
+
+    pred_horizon = action_chunk.shape[1]
+    if exec_horizon >= pred_horizon:
+        return action_chunk[:, -1:, :].expand(-1, pred_horizon, -1).clone()
+
+    suffix = action_chunk[:, exec_horizon:, :]
+    pad = action_chunk[:, -1:, :].expand(-1, exec_horizon, -1)
+    return torch.cat([suffix, pad], dim=1)
+
+
 # ---------------------------------------------------------------------------
 # Training loss
 # ---------------------------------------------------------------------------
@@ -212,6 +233,7 @@ class DDPMSampler:
         shape: tuple[int, ...],
         cond: torch.Tensor,
         device: torch.device,
+        init_clean: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Run the full reverse diffusion chain.
 
@@ -224,7 +246,13 @@ class DDPMSampler:
         Returns:
             Denoised action chunk ``(B, T_p, action_dim)``.
         """
-        x = torch.randn(shape, device=device)
+        if init_clean is None:
+            x = torch.randn(shape, device=device)
+        else:
+            if init_clean.shape != shape:
+                raise ValueError(f"init_clean shape {init_clean.shape} does not match {shape}")
+            t_batch = torch.full((shape[0],), self.num_steps - 1, dtype=torch.long, device=device)
+            x, _ = q_sample(init_clean.to(device), t_batch, self.schedule)
 
         for t_idx in reversed(range(self.num_steps)):
             t_batch = torch.full((shape[0],), t_idx, dtype=torch.long, device=device)
@@ -300,6 +328,7 @@ class DDIMSampler:
         shape: tuple[int, ...],
         cond: torch.Tensor,
         device: torch.device,
+        init_clean: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Run the DDIM reverse chain.
 
@@ -312,7 +341,14 @@ class DDIMSampler:
         Returns:
             Denoised action chunk ``(B, T_p, action_dim)``.
         """
-        x = torch.randn(shape, device=device)
+        if init_clean is None:
+            x = torch.randn(shape, device=device)
+        else:
+            if init_clean.shape != shape:
+                raise ValueError(f"init_clean shape {init_clean.shape} does not match {shape}")
+            t_start = self._timesteps[0]
+            t_batch = torch.full((shape[0],), t_start, dtype=torch.long, device=device)
+            x, _ = q_sample(init_clean.to(device), t_batch, self.schedule)
 
         for i, t_idx in enumerate(self._timesteps):
             t_batch = torch.full((shape[0],), t_idx, dtype=torch.long, device=device)
@@ -412,7 +448,12 @@ class DiffusionModule(nn.Module):
         return diffusion_loss(self.denoiser, action_norm, obs_cond, self.schedule)
 
     @torch.no_grad()
-    def predict_actions(self, batch: dict) -> torch.Tensor:
+    def predict_actions(
+        self,
+        batch: dict,
+        warm_start_actions_norm: torch.Tensor | None = None,
+        return_normalized: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         """Inference forward pass.
 
         Encodes observations and runs the configured sampler to produce a
@@ -433,8 +474,17 @@ class DiffusionModule(nn.Module):
         pred_horizon = self.cfg.model.pred_horizon
         shape = (B, pred_horizon, action_dim)
 
-        actions_norm = self._sampler.sample(self.denoiser, shape, obs_cond, device)
-        return self.action_normalizer.inverse(actions_norm)
+        actions_norm = self._sampler.sample(
+            self.denoiser,
+            shape,
+            obs_cond,
+            device,
+            init_clean=warm_start_actions_norm,
+        )
+        actions = self.action_normalizer.inverse(actions_norm)
+        if return_normalized:
+            return actions, actions_norm
+        return actions
 
 
 def build_denoiser(cfg: DictConfig, action_dim: int, obs_cond_dim: int) -> nn.Module:

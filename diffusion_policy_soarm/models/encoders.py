@@ -9,12 +9,13 @@ Design decisions:
   (1D U-Net) is the temporal model, not the encoder.
 - ImageNet normalisation is applied inside the encoder so callers can pass raw
   [0, 1] float images without any preprocessing boilerplate.
-- A linear projection head is added after global average pool.  Even with
-  feature_dim == 512 (matching ResNet18's pool output), this gives a learned
-  linear transformation that adapts the ImageNet features to the robot domain.
+- The encoder supports both the legacy average-pool/BatchNorm path used by old
+  checkpoints and a paper-faithful path with GroupNorm + spatial softmax.
 """
 
 from __future__ import annotations
+
+import functools
 
 import torch
 import torch.nn as nn
@@ -25,6 +26,29 @@ from omegaconf import DictConfig
 # ImageNet normalisation constants (mean and std per channel)
 _IMAGENET_MEAN = [0.485, 0.456, 0.406]
 _IMAGENET_STD = [0.229, 0.224, 0.225]
+
+
+class SpatialSoftmax2d(nn.Module):
+    """Spatial softmax pooling over a feature map.
+
+    Returns the expected x/y coordinates for each channel, giving a compact
+    location-aware representation of shape ``(B, 2 * C)``.
+    """
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Pool a feature map to channel-wise expected coordinates."""
+        B, C, H, W = x.shape
+        attn = torch.softmax(x.view(B, C, H * W), dim=-1)
+
+        ys = torch.linspace(-1.0, 1.0, H, device=x.device, dtype=x.dtype)
+        xs = torch.linspace(-1.0, 1.0, W, device=x.device, dtype=x.dtype)
+        grid_y, grid_x = torch.meshgrid(ys, xs, indexing="ij")
+        grid_x = grid_x.reshape(1, 1, H * W)
+        grid_y = grid_y.reshape(1, 1, H * W)
+
+        exp_x = (attn * grid_x).sum(dim=-1)
+        exp_y = (attn * grid_y).sum(dim=-1)
+        return torch.cat([exp_x, exp_y], dim=-1)
 
 
 class ImageEncoder(nn.Module):
@@ -39,18 +63,44 @@ class ImageEncoder(nn.Module):
         freeze_bn: If True, set BatchNorm layers to eval mode during training.
     """
 
-    def __init__(self, feature_dim: int, pretrained: bool, freeze_bn: bool) -> None:
+    def __init__(
+        self,
+        feature_dim: int,
+        pretrained: bool,
+        freeze_bn: bool,
+        norm_type: str = "batch",
+        pool_type: str = "avg",
+        group_norm_groups: int = 32,
+    ) -> None:
         super().__init__()
         self.freeze_bn = freeze_bn
+        self.norm_type = norm_type
+        self.pool_type = pool_type
 
-        weights = tvm.ResNet18_Weights.IMAGENET1K_V1 if pretrained else None
-        backbone = tvm.resnet18(weights=weights)
-        # Drop the final FC layer; keep everything through global average pool.
-        # backbone.children(): conv1, bn1, relu, maxpool, layer1-4, avgpool, fc
-        self.backbone = nn.Sequential(*list(backbone.children())[:-1])
-        # backbone output: (B, 512, 1, 1) after avgpool
+        if norm_type == "group":
+            if pretrained:
+                raise ValueError("GroupNorm ResNet18 does not support torchvision ImageNet weights.")
+            norm_layer = functools.partial(nn.GroupNorm, group_norm_groups)
+            backbone = tvm.resnet18(weights=None, norm_layer=norm_layer)
+        elif norm_type == "batch":
+            weights = tvm.ResNet18_Weights.IMAGENET1K_V1 if pretrained else None
+            backbone = tvm.resnet18(weights=weights)
+        else:
+            raise ValueError(f"Unknown encoder norm_type: {norm_type!r}")
 
-        self.proj = nn.Linear(512, feature_dim)
+        # Keep the convolutional feature map. Pooling happens explicitly below.
+        self.backbone = nn.Sequential(*list(backbone.children())[:-2])
+
+        if pool_type == "avg":
+            self.pool = nn.AdaptiveAvgPool2d((1, 1))
+            proj_in_dim = 512
+        elif pool_type == "spatial_softmax":
+            self.pool = SpatialSoftmax2d()
+            proj_in_dim = 1024
+        else:
+            raise ValueError(f"Unknown encoder pool_type: {pool_type!r}")
+
+        self.proj = nn.Linear(proj_in_dim, feature_dim)
 
         # Register ImageNet normalisation constants as non-trainable buffers so
         # they move with the module when .to(device) is called.
@@ -78,8 +128,9 @@ class ImageEncoder(nn.Module):
         """
         # ImageNet normalisation: (x - mean) / std
         x = (images - self._mean) / self._std
-        x = self.backbone(x)          # (B, 512, 1, 1)
-        x = x.flatten(1)              # (B, 512)
+        x = self.backbone(x)          # (B, 512, H', W')
+        x = self.pool(x)
+        x = x.flatten(1)
         return self.proj(x)           # (B, feature_dim)
 
 
@@ -104,6 +155,9 @@ class ObservationEncoder(nn.Module):
         self.obs_horizon: int = cfg.model.obs_horizon
         feature_dim: int = cfg.encoder.feature_dim
         state_embed_dim: int = cfg.encoder.state_embed_dim
+        norm_type: str = getattr(cfg.encoder, "norm_type", "batch")
+        pool_type: str = getattr(cfg.encoder, "pool_type", "avg")
+        gn_groups: int = int(getattr(cfg.encoder, "group_norm_groups", 32))
 
         # One ResNet18 encoder per camera (separate weights)
         self.image_encoders = nn.ModuleDict({
@@ -111,6 +165,9 @@ class ObservationEncoder(nn.Module):
                 feature_dim=feature_dim,
                 pretrained=cfg.encoder.pretrained,
                 freeze_bn=cfg.encoder.freeze_bn,
+                norm_type=norm_type,
+                pool_type=pool_type,
+                group_norm_groups=gn_groups,
             )
             for key in camera_keys
         })

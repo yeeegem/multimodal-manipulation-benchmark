@@ -65,7 +65,7 @@ flowchart LR
 
   EpsHat --> DDIM["DDIM step (loops N times)"]
   DDIM -->|x_t -> x_t-1| UNet
-  DDIM --> Out["actions (16, 6) deg<br/>execute first 8 then replan"]
+  DDIM --> Out["actions (16, 6) deg<br/>saved main_96x96 executes first 4 then replan"]
 ```
 
 </details>
@@ -79,6 +79,13 @@ vector**. The 47M-parameter 1-D temporal U-Net then denoises a random
 2176-D vector via FiLM. The output is denormalised back into degrees and
 sent to the arm as **absolute joint-angle setpoints**; the Feetech motors'
 firmware-side PID controllers do the actual position control.
+
+For historical accuracy: the saved `main_96x96` run at
+`runs/main_96x96/20260528_185334/` used a legacy vision encoder variant
+(ImageNet-pretrained ResNet18 with average pooling and BatchNorm) and
+`exec_horizon=4`. The current `configs/base.yaml` has been updated to the
+paper-faithful vision stack (GroupNorm + spatial softmax + no pretraining)
+for future runs.
 
 For a step-by-step walk-through with code references and the inference
 walkthrough, see [`diffusion_policy_soarm/docs/main_96x96_explained.ipynb`](diffusion_policy_soarm/docs/main_96x96_explained.ipynb)
@@ -102,8 +109,8 @@ inverted at inference.
 ## Project plan and status
 
 **Current step:** Phase 6 (inference on the arm), gate pending. The model
-runs end-to-end at ~50 ms inference with DDIM at 10 steps; tuning the
-software-side safety cap and the Feetech `Acceleration` register, then
+runs end-to-end at ~50 ms inference with DDIM at 10 steps; tuning
+warm-started replanning and the Feetech `Acceleration` register, then
 running the autonomous-success gate.
 
 | # | Phase | Status | Output |
@@ -113,8 +120,8 @@ running the autonomous-success gate.
 | 2 | Diffusion core | done | cosine + linear schedules, `q_sample`, DDPM and DDIM samplers, 16/16 tests pass |
 | 3 | Denoiser | done | ObservationEncoder 2176-D, ConditionalUNet1d 47M params, DiffusionModule end-to-end |
 | 4 | Training loop | done | EMA, AMP, cosine + warmup LR, checkpointing, TensorBoard |
-| 5 | Full training | done | 150 epochs at 96 x 96, final loss 0.00298, run `runs/main_96x96/20260528_185334` |
-| 6 | Inference on arm | in progress | `infer.py` complete; tuning safety cap; gate = one autonomous success |
+| 5 | Full training | done | 300 epochs at 96 x 96, final loss 0.00298, run `runs/main_96x96/20260528_185334` |
+| 6 | Inference on arm | in progress | `infer.py` complete; tuning warm-start + motor acceleration; gate = one autonomous success |
 | 7 | BC MSE baseline | todo | proves regression-to-mean failure on the bimodal task |
 | 8 | Eval harness (3 tiers) | todo | tier A in-distribution, tier B distractors, tier C OOD; failure-category logging |
 | 9 | Ablations | todo | see below |
@@ -148,7 +155,7 @@ and eval protocol):
 | Axis | Default | Variants tested |
 |---|---|---|
 | Image resolution | 96 x 96 | 480 x 640 (`configs/ablations/high_res.yaml`, already trained: `runs/ablation_high_res/20260527_102159/`) |
-| Action chunk length | T_p=16, T_a=8 | (T_p=8, T_a=4); (T_p=32, T_a=16) |
+| Action chunk length | T_p=16, T_a=4 in saved `main_96x96` | (T_p=8, T_a=4); (T_p=32, T_a=16) |
 | Observation horizon | T_o=2 | T_o=1 (no implicit velocity); T_o=4 |
 | Action representation | absolute joint angles (deg) | per-step deltas (deg/tick); joint velocities (deg/s) |
 
@@ -291,10 +298,10 @@ You should see a sequence of latency lines once the loop starts:
 inference 47.3 ms | mean 49.1 | p95 56.0
 ```
 
-If lines like `clip shoulder_lift: requested delta +12.30 deg -> +5.00 deg`
-appear, the software safety cap is engaging on that joint, which is
-expected on the first few steps after a fresh start (see "Lessons from
-the build" below).
+The deployed loop warm-starts the next DDIM sample from the unexecuted
+suffix of the previous action chunk. This improves temporal consistency
+across replans compared with restarting each chunk from fresh Gaussian
+noise.
 
 ---
 
@@ -360,15 +367,11 @@ distribution contains some fast motions. With the Feetech `Acceleration`
 register at its near-max default, each delta executes at full motor
 speed.
 
-Fix landed in two places:
-- A software-side per-step delta clip in `infer.py` (driven by
-  `infer.max_relative_target`, default 5 deg per joint per tick). The
-  clip is against the previously **commanded** position rather than the
-  measured `Present_Position`, so it adds zero serial reads to the loop.
+Fix landed in one place:
 - A direct write to the Feetech `Acceleration` register
   (`infer.motor_acceleration`, default 64 of 255) right after
   `robot.connect()`. This lowers the firmware ramp rate so even an
-  un-clipped delta executes more gently. Persists until power cycle.
+  large commanded delta executes more gently. Persists until power cycle.
 
 ### Phase 6: serial bus dropped at 100 DDIM steps
 
@@ -406,8 +409,8 @@ Three small but real time sinks during the initial bring-up:
 | Normalisation | Min-max to [-1, +1] | Required by `clip_sample` and bounded noise schedule |
 | Sampler | DDPM train, DDIM infer | DDIM is about 10x faster with same quality at 10 to 20 steps |
 | EMA | decay = 0.9999 | Standard for diffusion; always use EMA weights for eval |
-| Safety cap | software-side, vs prev_commanded | No extra serial reads, full ownership of the warning path |
-| Motor accel | Feetech `Acceleration` register lowered to 64 | Slows firmware-side ramp; complementary to the software cap |
+| Warm-start | shift previous action chunk suffix into next DDIM init | Improves temporal consistency across replans |
+| Motor accel | Feetech `Acceleration` register lowered to 64 | Slows the firmware-side ramp without altering policy outputs |
 
 ---
 

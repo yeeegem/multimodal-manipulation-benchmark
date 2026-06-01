@@ -28,7 +28,11 @@ from lerobot.robots.so_follower.so_follower import SOFollower
 from omegaconf import OmegaConf
 
 from diffusion_policy_soarm.data.normalization import Normalizer
-from diffusion_policy_soarm.models.diffusion import DiffusionModule, build_denoiser
+from diffusion_policy_soarm.models.diffusion import (
+    DiffusionModule,
+    build_denoiser,
+    shift_action_chunk_for_warm_start,
+)
 from diffusion_policy_soarm.models.encoders import ObservationEncoder
 from diffusion_policy_soarm.utils.config import load_config
 
@@ -142,28 +146,6 @@ def _preprocess_obs_buffer(
 
 
 # ---------------------------------------------------------------------------
-# Safety cap helpers
-# ---------------------------------------------------------------------------
-
-def _build_cap_array(cap, motor_names: list[str]) -> np.ndarray | None:
-    """Resolve cfg.infer.max_relative_target into a per-joint cap in degrees.
-
-    Accepts a scalar (broadcast to all joints), a dict (per-motor; joints not
-    listed default to +inf so they are effectively uncapped), or None
-    (feature disabled).
-    """
-    if cap is None:
-        return None
-    if isinstance(cap, (int, float)):
-        return np.full(len(motor_names), float(cap), dtype=np.float32)
-    arr = np.full(len(motor_names), np.inf, dtype=np.float32)
-    for i, m in enumerate(motor_names):
-        if m in cap:
-            arr[i] = float(cap[m])
-    return arr
-
-
-# ---------------------------------------------------------------------------
 # Control loop
 # ---------------------------------------------------------------------------
 
@@ -210,22 +192,7 @@ def _run_loop(
         for _ in range(obs_horizon):
             obs_buffer.append(robot.get_observation())
 
-    # Resolve the per-joint delta cap. None disables the clip path entirely.
-    cap_arr = _build_cap_array(
-        OmegaConf.select(cfg, "infer.max_relative_target", default=None),
-        motor_names,
-    )
-
-    # Initialise prev_action from the current arm pose so the first commanded
-    # position is bounded relative to reality, not zeros. In dry-run there is
-    # no real arm so the clip path is skipped.
-    prev_action: np.ndarray | None = None
-    if cap_arr is not None and not dry_run:
-        latest_obs = obs_buffer[-1]
-        prev_action = np.array(
-            [float(latest_obs[f"{m}.pos"]) for m in motor_names],
-            dtype=np.float32,
-        )
+    warm_start_actions_norm: torch.Tensor | None = None
 
     print("Inference loop started. Press Ctrl-C to stop.")
 
@@ -238,7 +205,11 @@ def _run_loop(
         batch = _preprocess_obs_buffer(obs_buffer, camera_key_map, motor_names, image_size, device)
 
         with torch.no_grad():
-            actions = model.predict_actions(batch)  # (1, pred_horizon, action_dim)
+            actions, actions_norm = model.predict_actions(
+                batch,
+                warm_start_actions_norm=warm_start_actions_norm,
+                return_normalized=True,
+            )
 
         latency_ms = (time.perf_counter() - t0) * 1000
         latencies.append(latency_ms)
@@ -249,6 +220,9 @@ def _run_loop(
         print(f"inference {latency_ms:.1f} ms | mean {mean_lat:.1f} | p95 {p95_lat:.1f}")
 
         chunk = actions[0]  # (pred_horizon, action_dim)
+        warm_start_actions_norm = shift_action_chunk_for_warm_start(
+            actions_norm, exec_horizon
+        ).detach()
 
         # print("actions:", actions[0, :4].cpu().numpy())  # first 4 steps
         # print("state:  ", batch["state"][0, -1].cpu().numpy())  # current position
@@ -257,23 +231,6 @@ def _run_loop(
             step_t0 = time.perf_counter()
             if not dry_run:
                 action_vec = chunk[i].cpu().numpy().astype(np.float32)
-
-                # Per-step delta cap against the last *commanded* position.
-                # Uses no extra serial reads (unlike LeRobot's max_relative_target
-                # path which reads Present_Position every send_action).
-                if cap_arr is not None:
-                    delta = action_vec - prev_action
-                    clipped = np.clip(delta, -cap_arr, cap_arr)
-                    mask = np.abs(delta - clipped) > 1e-4
-                    if mask.any():
-                        for j in np.where(mask)[0]:
-                            print(
-                                f"  clip {motor_names[j]}: "
-                                f"requested delta {delta[j]:+.2f} deg -> {clipped[j]:+.2f} deg"
-                            )
-                    action_vec = prev_action + clipped
-                    prev_action = action_vec
-
                 action_dict = {f"{m}.pos": float(v) for m, v in zip(motor_names, action_vec)}
                 robot.send_action(action_dict)
             elapsed = time.perf_counter() - step_t0
