@@ -21,6 +21,7 @@ from diffusion_policy_soarm.models.diffusion import (
     diffusion_loss,
     make_noise_schedule,
     q_sample,
+    shift_action_chunk_for_warm_start,
 )
 
 # ---------------------------------------------------------------------------
@@ -236,6 +237,30 @@ def test_ddim_timestep_count(cosine_schedule):
     K = 10
     sampler = DDIMSampler(cosine_schedule, num_inference_steps=K)
     assert len(sampler._timesteps) == K
+
+
+def test_ddim_warm_start_accepts_clean_init(cosine_schedule):
+    sampler = DDIMSampler(cosine_schedule, num_inference_steps=10, clip_sample=True)
+    B, T_p, D = 2, 16, 6
+    cond = torch.zeros(B, 64)
+    init_clean = torch.zeros(B, T_p, D)
+    out = sampler.sample(
+        _ZeroDenoiser(),
+        (B, T_p, D),
+        cond,
+        torch.device("cpu"),
+        init_clean=init_clean,
+    )
+    assert out.shape == (B, T_p, D)
+
+
+def test_shift_action_chunk_for_warm_start():
+    x = torch.arange(1 * 6 * 2, dtype=torch.float32).reshape(1, 6, 2)
+    shifted = shift_action_chunk_for_warm_start(x, exec_horizon=2)
+    expected = torch.tensor(
+        [[[4.0, 5.0], [6.0, 7.0], [8.0, 9.0], [10.0, 11.0], [10.0, 11.0], [10.0, 11.0]]]
+    )
+    assert torch.allclose(shifted, expected)
 
 
 # ---------------------------------------------------------------------------

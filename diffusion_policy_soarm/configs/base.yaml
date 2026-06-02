@@ -26,13 +26,14 @@ model:
   obs_horizon: 2
   # T_p: length of the predicted action chunk (the denoiser output dimension).
   pred_horizon: 16
-  # T_a: how many steps of the chunk are actually executed before replanning.
-  exec_horizon: 8
 
 encoder:
   backbone: "resnet18"
-  pretrained: true          # load ImageNet weights
-  freeze_bn: false          # freeze BatchNorm during fine-tuning (ablation axis)
+  pretrained: false         # paper-faithful run: no ImageNet pretraining
+  freeze_bn: false          # only relevant when norm_type == "batch"
+  norm_type: "group"        # paper-faithful run: GroupNorm in the ResNet backbone
+  group_norm_groups: 32
+  pool_type: "spatial_softmax"  # paper-faithful run: preserve spatial information
   # Feature vector size per camera after global average pool + linear head.
   feature_dim: 512
   # Linear projection dimension for the proprioceptive state vector.
@@ -109,6 +110,8 @@ eval:
 infer:
   robot_port: "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5B42076683-if00"
   robot_id: "valera"
+  # T_a: how many steps of the chunk are actually executed before replanning.
+  exec_horizon: 8
   # Camera devices — 640x480 native; encoder resizes to dataset.image_size.
   cameras:
     front:
@@ -135,13 +138,6 @@ infer:
   num_ddim_steps: 10
   # torch.compile: ~30 s one-time warmup, then faster inference on repeated calls.
   compile: true
-  # Per-step delta cap in degrees per joint. Each commanded position is clipped
-  # so |new - last_commanded| <= max_relative_target before being sent to the arm.
-  # Implemented in pure software against the previously commanded vector, so it
-  # adds no extra serial reads (unlike LeRobot's built-in max_relative_target
-  # path which adds one sync_read per send_action). Set null to disable.
-  # 5.0 deg/tick at 30 fps gives ~150 deg/s max joint speed.
-  max_relative_target: 5.0
   # Feetech Acceleration register (raw 0-255). Default ~254 makes motors ramp
   # at near-max rate. Lower values (32-64) make commanded deltas execute more
   # slowly at the firmware level. Written to every motor after robot.connect();

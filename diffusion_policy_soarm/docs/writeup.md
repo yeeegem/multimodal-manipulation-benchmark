@@ -44,8 +44,10 @@ right cube.
 
 ### 2.1 Observation Encoder
 
-Two ResNet18 encoders (one per camera, ImageNet-pretrained) produce 512-dim feature
-vectors each. Proprioceptive state is projected to 64 dims. Features from
+For the historical `main_96x96` run, two ResNet18 encoders (one per camera,
+ImageNet-pretrained, average-pool, BatchNorm) produce 512-dim feature vectors each.
+The current paper-faithful base config replaces that with GroupNorm + spatial softmax
+and no pretraining. Proprioceptive state is projected to 64 dims. Features from
 `obs_horizon = 2` consecutive frames are concatenated, giving a conditioning vector of
 dimension **[PLACEHOLDER: 2 × (512 + 512 + 64) = 2176]**.
 
@@ -57,9 +59,9 @@ each residual block. Total parameters: **[PLACEHOLDER: M]**.
 
 ### 2.3 Diffusion
 
-Cosine noise schedule, T = 100 training steps. Epsilon prediction. DDPM sampling at
-inference (100 steps). Action chunks of length T_p = 16; execute first T_a = 8 steps
-before replanning.
+Cosine noise schedule, T = 100 training steps. Epsilon prediction. Deployment uses
+DDIM sampling at 10 steps. Action chunks of length T_p = 16; the saved `main_96x96`
+run executes first T_a = 4 steps before replanning.
 
 ---
 

@@ -107,7 +107,7 @@ steps before replanning (receding-horizon control). This means:
 
 - The network sees T_o = 2 past observation frames as context.
 - It predicts T_p = 16 future actions at once.
-- It executes T_a = 8 of them, then replans.
+- In the saved `main_96x96` run it executes T_a = 4 of them, then replans.
 
 This is the temporal analogue of a model-predictive controller. Predicting multiple
 steps avoids the discontinuities that arise from per-step replanning.
@@ -177,7 +177,7 @@ consistently outperforms the raw weights on diffusion models.
 | Axis | Default | Ablation |
 |------|---------|----------|
 | Denoiser backbone | CNN U-Net | Transformer |
-| Sampler | DDPM (T=100) | DDIM (10 steps) |
-| Chunk length | T_p=16, T_a=8 | T_p=8/32, T_a=4/16 |
+| Sampler | DDPM (training, T=100) | DDIM (deployment, 10 steps) |
+| Chunk length | T_p=16, T_a=4 in saved `main_96x96` | T_p=8/32, T_a=4/16 |
 
 Config overrides live in `configs/ablations/`.
