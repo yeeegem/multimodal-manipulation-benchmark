@@ -6,6 +6,8 @@ dist/
 .venv/
 
 recordings/
+recordings_96x96/
+
 
 # uv
 uv.lock
