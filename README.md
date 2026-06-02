@@ -83,7 +83,7 @@ firmware-side PID controllers do the actual position control.
 For historical accuracy: the saved `main_96x96` run at
 `runs/main_96x96/20260528_185334/` used a legacy vision encoder variant
 (ImageNet-pretrained ResNet18 with average pooling and BatchNorm) and
-`exec_horizon=4`. The current `configs/base.yaml` has been updated to the
+`infer.exec_horizon=4`. The current `configs/base.yaml` has been updated to the
 paper-faithful vision stack (GroupNorm + spatial softmax + no pretraining)
 for future runs.
 

@@ -3,4 +3,6 @@
 
 model:
   pred_horizon: 32
+
+infer:
   exec_horizon: 16

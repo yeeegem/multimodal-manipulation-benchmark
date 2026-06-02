@@ -26,8 +26,6 @@ model:
   obs_horizon: 2
   # T_p: length of the predicted action chunk (the denoiser output dimension).
   pred_horizon: 16
-  # T_a: how many steps of the chunk are actually executed before replanning.
-  exec_horizon: 8
 
 encoder:
   backbone: "resnet18"
@@ -112,6 +110,8 @@ eval:
 infer:
   robot_port: "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5B42076683-if00"
   robot_id: "valera"
+  # T_a: how many steps of the chunk are actually executed before replanning.
+  exec_horizon: 8
   # Camera devices — 640x480 native; encoder resizes to dataset.image_size.
   cameras:
     front:

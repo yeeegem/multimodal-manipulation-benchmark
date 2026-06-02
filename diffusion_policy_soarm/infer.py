@@ -169,7 +169,7 @@ def _run_loop(
     rolling window and printed each iteration as mean and p95.
     """
     obs_horizon: int = cfg.model.obs_horizon
-    exec_horizon: int = cfg.model.exec_horizon
+    exec_horizon: int = cfg.infer.exec_horizon
     fps: float = cfg.dataset.fps
     image_size: tuple[int, int] = tuple(cfg.dataset.image_size)
     camera_key_map: dict[str, str] = dict(cfg.infer.camera_key_map)
