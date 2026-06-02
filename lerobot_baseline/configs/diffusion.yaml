@@ -1,0 +1,40 @@
+# LeRobot DiffusionPolicy hyperparameters for yeeegem/redcubes_bluecup.
+# This file is documentation only -- all values are passed as CLI flags in train.sh.
+
+dataset:
+  repo_id: yeeegem/redcubes_bluecup
+
+policy:
+  type: diffusion
+
+  # Temporal horizon -- matched to custom implementation for fair comparison.
+  n_obs_steps: 2       # T_o: observation history length
+  horizon: 16          # T_p: predicted action chunk length
+  n_action_steps: 8    # T_a: steps executed before replanning
+
+  # Vision backbone -- ResNet18 with GroupNorm + spatial softmax (paper default).
+  resize_shape: [96, 96]
+  down_dims: [256, 512, 1024]
+  kernel_size: 5
+  n_groups: 8
+  use_group_norm: true
+
+  # Noise schedule -- squaredcos_cap_v2 is LeRobot's equivalent of cosine.
+  num_train_timesteps: 100
+  beta_schedule: squaredcos_cap_v2
+  prediction_type: epsilon
+  clip_sample: true
+
+  # Optimizer.
+  optimizer_lr: 1.0e-4
+  optimizer_weight_decay: 1.0e-6
+  scheduler_name: cosine
+  scheduler_warmup_steps: 500
+
+training:
+  batch_size: 256
+  num_workers: 6
+  steps: 100000    # adjust based on dataset size; run `lerobot-info` to check frame count
+  seed: 42
+
+output_dir: lerobot_baseline/runs/main
