@@ -15,6 +15,8 @@ set -euo pipefail
 
 uv run lerobot-train \
   --dataset.repo_id=yeeegem/redcubes_bluecup \
+  --dataset.root=recordings/redcubes_bluecup \
+  --dataset.video_backend=pyav \
   --policy.type=diffusion \
   --policy.n_obs_steps=2 \
   --policy.horizon=16 \
@@ -32,8 +34,9 @@ uv run lerobot-train \
   --policy.optimizer_weight_decay=1e-6 \
   --policy.scheduler_name=cosine \
   --policy.scheduler_warmup_steps=500 \
-  --batch_size=256 \
-  --num_workers=6 \
+  --policy.use_amp=true \
+  --batch_size=128 \
+  --num_workers=4 \
   --steps=100000 \
   --policy.push_to_hub=false \
   --seed=42 \
