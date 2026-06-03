@@ -22,6 +22,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from omegaconf import DictConfig
 
+from diffusion_policy_soarm.models.cnn_backbone import ConditionalUNet1d
+from diffusion_policy_soarm.models.transformer_backbone import TransformerDenoiser
+
 
 # ---------------------------------------------------------------------------
 # Noise schedule
@@ -500,10 +503,8 @@ def build_denoiser(cfg: DictConfig, action_dim: int, obs_cond_dim: int) -> nn.Mo
     """
     backbone = cfg.denoiser.backbone
     if backbone == "cnn":
-        from diffusion_policy_soarm.models.cnn_backbone import ConditionalUNet1d
         return ConditionalUNet1d(cfg, action_dim=action_dim, obs_cond_dim=obs_cond_dim)
     elif backbone == "transformer":
-        from diffusion_policy_soarm.models.transformer_backbone import TransformerDenoiser
         return TransformerDenoiser(cfg, action_dim=action_dim, cond_dim=obs_cond_dim)
     else:
         raise ValueError(f"Unknown denoiser backbone: {backbone!r}")

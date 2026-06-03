@@ -7,8 +7,8 @@ A guide for readers who know diffusion models but not this codebase.
 ## 1. The Problem: Multimodal Imitation Learning
 
 Standard behaviour cloning (BC) trains a policy π(a | o) by minimising the MSE between
-predicted and demonstrated actions. When the training distribution is **multimodal** —
-two equally-valid strategies exist — MSE regression averages across modes, producing an
+predicted and demonstrated actions. When the training distribution is **multimodal**
+(two equally-valid strategies exist) MSE regression averages across modes, producing an
 action that is wrong for *all* modes. On our task (pick either red cube and place it in
 the blue cup), the BC baseline reaches into the empty space between the two cubes.
 
@@ -77,7 +77,7 @@ c is the concatenation of:
 
 **Note:** This is *not* classifier-free guidance (CFG). CFG requires training an
 unconditional model alongside the conditional one and interpolating at inference. The
-original Diffusion Policy paper does not use CFG — it directly conditions the denoiser
+original Diffusion Policy paper does not use CFG - it directly conditions the denoiser
 on observations. We follow the paper here.
 
 **Code location:** `models/encoders.py` → `ObservationEncoder`.
@@ -107,7 +107,8 @@ steps before replanning (receding-horizon control). This means:
 
 - The network sees T_o = 2 past observation frames as context.
 - It predicts T_p = 16 future actions at once.
-- In the saved `main_96x96` run it executes T_a = 4 of them, then replans.
+- It executes T_a of them (default 8 in `base.yaml`; the saved `main_96x96` run
+  used 4), then replans.
 
 This is the temporal analogue of a model-predictive controller. Predicting multiple
 steps avoids the discontinuities that arise from per-step replanning.
@@ -131,7 +132,7 @@ To sample a clean action at inference, we reverse the diffusion chain:
 ## 9. DDIM Sampling (Fast Inference)
 
 DDIM (Song et al. 2021) is a deterministic ODE solver for the reverse process. It
-reaches the same quality as DDPM in 10–20 steps instead of T = 100.
+reaches the same quality as DDPM in 10-20 steps instead of T = 100.
 
 At each step, instead of sampling from the posterior, DDIM follows:
 
@@ -160,7 +161,7 @@ uses identical scaling.
 
 ## 11. EMA Weights
 
-During training, an exponential moving average (EMA) of the denoiser weights is
+During training, an exponential moving average (EMA) of the model weights is
 maintained:
 
     θ_ema ← decay · θ_ema + (1 − decay) · θ

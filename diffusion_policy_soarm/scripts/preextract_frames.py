@@ -34,6 +34,7 @@ from omegaconf import DictConfig, OmegaConf
 from PIL import Image
 from tqdm import tqdm
 
+from diffusion_policy_soarm.data.dataset import frame_cache_dir
 from diffusion_policy_soarm.utils.config import load_config
 
 # ---------------------------------------------------------------------------
@@ -53,7 +54,7 @@ def _worker_init(cfg: DictConfig) -> None:
     hf_repo_id: str = OmegaConf.select(cfg, "dataset.hf_repo_id", default=dataset_path.name)
     _camera_keys = list(cfg.dataset.camera_keys)
     _target_hw = tuple(cfg.dataset.image_size)  # type: ignore[assignment]
-    _cache_dir = dataset_path / "frame_cache"
+    _cache_dir = frame_cache_dir(dataset_path, _target_hw)
     fps: float = cfg.dataset.fps
 
     _ds = LeRobotDataset(
@@ -123,7 +124,7 @@ def preextract(cfg: DictConfig, num_workers: int) -> None:
     hf_repo_id: str = OmegaConf.select(cfg, "dataset.hf_repo_id", default=dataset_path.name)
     camera_keys: list[str] = list(cfg.dataset.camera_keys)
 
-    cache_dir = dataset_path / "frame_cache"
+    cache_dir = frame_cache_dir(dataset_path, tuple(cfg.dataset.image_size))
     for cam_key in camera_keys:
         (cache_dir / cam_key.replace("/", ".")).mkdir(parents=True, exist_ok=True)
 

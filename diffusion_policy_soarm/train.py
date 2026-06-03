@@ -27,7 +27,7 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from diffusion_policy_soarm.data.dataset import DiffusionDataset
+from diffusion_policy_soarm.data.dataset import DiffusionDataset, frame_cache_dir
 from diffusion_policy_soarm.data.normalization import build_normalizers
 from diffusion_policy_soarm.models.factory import build_policy
 from diffusion_policy_soarm.scripts.preextract_frames import preextract
@@ -47,8 +47,8 @@ from diffusion_policy_soarm.utils.seed import seed_everything
 class EMAModel:
     """Exponential moving average of model parameters.
 
-    Maintains a shadow copy of all parameters.  The shadow copy is used at
-    eval/inference time for better generalisation.
+    Maintains a shadow copy of all model parameters (encoder + denoiser/head).
+    The shadow copy is used at eval/inference time for better generalisation.
 
     Args:
         model: Model whose parameters to track.
@@ -175,7 +175,7 @@ def load_checkpoint(
 
 
 # ---------------------------------------------------------------------------
-# Core training loop (shared between train.py and overfit_check.py)
+# Core training loop
 # ---------------------------------------------------------------------------
 
 def resolve_checkpoint(resume: str | Path) -> Path:
@@ -197,8 +197,6 @@ def resolve_checkpoint(resume: str | Path) -> Path:
 def run_training(
     cfg,
     run_dir: Path,
-    episode_ids: list[int] | None = None,
-    max_steps: int | None = None,
     resume_from: str | Path | None = None,
 ) -> nn.Module:
     """Main training loop.
@@ -206,9 +204,6 @@ def run_training(
     Args:
         cfg: Resolved OmegaConf config.
         run_dir: Directory to write logs, checkpoints, and config.
-        episode_ids: If set, restrict training to these episode indices
-            (used by the overfit sanity check).
-        max_steps: Hard stop after this many gradient steps (overfit check).
         resume_from: Path to a checkpoint ``.pt`` file or a run directory
             containing ``checkpoints/latest.pt``.  When provided, model /
             EMA / optimiser / scheduler states are restored and training
@@ -221,13 +216,13 @@ def run_training(
     print(f"Device: {device}")
 
     # --- Frame cache check --------------------------------------------------
-    cache_dir = Path(cfg.dataset.path) / "frame_cache"
+    cache_dir = frame_cache_dir(Path(cfg.dataset.path), tuple(cfg.dataset.image_size))
     if not cache_dir.exists():
         print("Frame cache not found. Running preextract_frames automatically...")
         preextract(cfg, num_workers=os.cpu_count())
 
     # --- Dataset & dataloader -----------------------------------------------
-    ds = DiffusionDataset(cfg, episode_ids=episode_ids)
+    ds = DiffusionDataset(cfg)
     print(f"Training samples: {len(ds)}")
 
     # persistent_workers=False: PyAV video decoding deadlocks with persistent workers.
@@ -320,9 +315,6 @@ def run_training(
 
             pbar.set_postfix(loss=f"{loss_val:.4f}")
 
-            if max_steps is not None and step >= max_steps:
-                break
-
         mean_loss = sum(epoch_losses) / len(epoch_losses)
         writer.add_scalar("train/epoch_loss", mean_loss, epoch)
         print(f"Epoch {epoch+1:4d}  loss={mean_loss:.5f}  lr={scheduler.get_last_lr()[0]:.2e}")
@@ -332,9 +324,6 @@ def run_training(
             save_checkpoint(run_dir, "best", model, ema, optimizer, scheduler, epoch, step)
 
         save_checkpoint(run_dir, "latest", model, ema, optimizer, scheduler, epoch, step)
-
-        if max_steps is not None and step >= max_steps:
-            break
 
     writer.close()
     return ema.shadow
