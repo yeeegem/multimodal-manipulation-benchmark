@@ -1,8 +1,8 @@
-"""Model factory: assemble the policy selected by ``cfg.model.type``.
+"""Model factory: assemble networks and the policy selected by ``cfg.model.type``.
 
-Centralises model construction so the training loop (``train.py``) and the
-inference loop (``infer.py``) build the encoder and dispatch on model type in
-exactly one place. Supported types:
+Single home for "build a network/policy" so the training loop (``train.py``) and the
+inference loop (``infer.py``) construct things in exactly one place. Supported policy
+types:
 
   - ``"diffusion"`` (default): ObservationEncoder + denoiser + DiffusionModule.
   - ``"bc"``:                   ObservationEncoder + MLPActionHead + BCModule.
@@ -14,8 +14,30 @@ import torch.nn as nn
 from omegaconf import DictConfig
 
 from diffusion_policy_soarm.models.bc import BCModule, MLPActionHead
-from diffusion_policy_soarm.models.diffusion import DiffusionModule, build_denoiser
+from diffusion_policy_soarm.models.cnn_backbone import ConditionalUNet1d
+from diffusion_policy_soarm.models.diffusion import DiffusionModule
 from diffusion_policy_soarm.models.encoders import ObservationEncoder
+from diffusion_policy_soarm.models.transformer_backbone import TransformerDenoiser
+
+
+def build_denoiser(cfg: DictConfig, action_dim: int, obs_cond_dim: int) -> nn.Module:
+    """Factory: instantiate the denoiser selected by ``cfg.denoiser.backbone``.
+
+    Args:
+        cfg: Full resolved config.
+        action_dim: Dimensionality of one action step.
+        obs_cond_dim: ObservationEncoder output dimension.
+
+    Returns:
+        ConditionalUNet1d or TransformerDenoiser.
+    """
+    backbone = cfg.denoiser.backbone
+    if backbone == "cnn":
+        return ConditionalUNet1d(cfg, action_dim=action_dim, obs_cond_dim=obs_cond_dim)
+    elif backbone == "transformer":
+        return TransformerDenoiser(cfg, action_dim=action_dim, cond_dim=obs_cond_dim)
+    else:
+        raise ValueError(f"Unknown denoiser backbone: {backbone!r}")
 
 
 def build_policy(

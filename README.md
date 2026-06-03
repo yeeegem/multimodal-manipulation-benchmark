@@ -277,8 +277,8 @@ uv run python -m diffusion_policy_soarm.train \
 ```
 
 Runs are saved to `runs/<experiment>/<YYYYMMDD_HHMMSS>/`. Each run
-directory contains `config.yaml`, `git_hash.txt`, `tb/` (TensorBoard),
-and `checkpoints/` with `best.pt` and `latest.pt`.
+directory contains `config.yaml`, `tb/` (TensorBoard), and `checkpoints/`
+with `best.pt` and `latest.pt`.
 
 **Resume an interrupted run:**
 ```bash

@@ -117,8 +117,8 @@ def test_predict_actions_return_normalized(model, batch):
     expected = (BATCH, model.cfg.model.pred_horizon, ACTION_DIM)
     assert actions.shape == expected
     assert actions_norm.shape == expected
-    # Identity normalizer: denormalised equals normalised.
-    assert torch.allclose(actions, actions_norm)
+    # Identity normalizer: denormalised equals normalised (up to fp round-trip).
+    assert torch.allclose(actions, actions_norm, atol=1e-5)
 
 
 def test_warm_start_is_ignored(model, batch):
