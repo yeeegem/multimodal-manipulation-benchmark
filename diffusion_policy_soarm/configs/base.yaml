@@ -22,6 +22,10 @@ dataset:
   preload_cache: true
 
 model:
+  # Policy family: "diffusion" (paper default) or "bc" (Phase 7 MSE baseline).
+  # The two share the encoder, data, normalization, and chunked control; they
+  # differ only in the action head and loss. See configs/ablations/bc_baseline.yaml.
+  type: "diffusion"
   # T_o: how many consecutive observation frames form one conditioning input.
   obs_horizon: 2
   # T_p: length of the predicted action chunk (the denoiser output dimension).
@@ -71,6 +75,13 @@ denoiser:
     n_layers: 6
     d_model: 256
     dropout: 0.1
+
+# Behavior-cloning baseline (Phase 7). Only used when model.type == "bc".
+# The MLP head maps the 2176-D conditioning vector to a full (pred_horizon,
+# action_dim) chunk in one forward pass, trained with MSE.
+bc:
+  hidden_dims: [512, 512]
+  dropout: 0.0
 
 training:
   seed: 42

@@ -1,0 +1,19 @@
+# Phase 7: behavior-cloning MSE baseline.
+#
+# Switches the policy family to BC. Everything else (encoder, dataset,
+# normalization, obs_horizon/pred_horizon, training schedule, chunked control)
+# is inherited unchanged from base.yaml so the comparison against Diffusion
+# Policy is apples-to-apples. The diffusion.* and denoiser.* sections are
+# simply ignored when model.type == "bc".
+#
+# The MLP head shape comes from the base `bc:` section (hidden_dims, dropout);
+# override it here if you want to ablate head capacity.
+#
+# Usage:
+#   uv run python -m diffusion_policy_soarm.train \
+#     --config diffusion_policy_soarm/configs/base.yaml \
+#     --override diffusion_policy_soarm/configs/ablations/bc_baseline.yaml \
+#     training.experiment=bc_baseline
+
+model:
+  type: "bc"

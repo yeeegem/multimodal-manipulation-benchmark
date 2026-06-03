@@ -172,10 +172,43 @@ consistently outperforms the raw weights on diffusion models.
 
 ---
 
-## 12. Ablation Axes
+## 12. The Behavior-Cloning Baseline (Phase 7)
+
+The BC baseline is the control that makes the multimodality result legible. It shares
+the *exact* observation encoder, data pipeline, min-max normalisation, action chunking,
+and receding-horizon execution of the diffusion policy. Only two things change:
+
+- **Head:** a small MLP maps the 2176-D conditioning vector straight to a
+  `(pred_horizon, action_dim)` chunk in a single forward pass, instead of the iterative
+  FiLM U-Net denoiser.
+- **Loss:** plain MSE against the demonstration chunk (in normalised space), instead of
+  epsilon-prediction.
+
+**Why it must fail on the bimodal pick.** For a conditioning vector c that matches both
+a left-cube and a right-cube demonstration, the MSE-optimal prediction is the
+*conditional mean* E[a | c]. With the two valid action chunks roughly mirrored about the
+workspace centre, that mean is the midpoint: the gripper drives into the empty gap
+between the cubes and grasps nothing. MSE regression collapses a multimodal target to a
+single average; it has no mechanism to commit to one mode. Diffusion sampling does,
+because each rollout draws a different initial noise and follows it to one mode.
+
+This is the same encoder/c -> action contrast as the diffusion path; swapping only the
+head and loss isolates the modeling choice as the cause of the behaviour.
+
+**Code locations:** `models/bc.py` (`MLPActionHead`, `BCModule`),
+`models/factory.py` (`build_policy` dispatches on `model.type`),
+`configs/ablations/bc_baseline.yaml`. Train it with the same `train.py`; both policies
+expose identical `compute_loss` / `predict_actions` interfaces, so eval and inference are
+unchanged. A self-contained numerical demonstration of the mean-collapse lives in
+`docs/bc_baseline_explained.ipynb`.
+
+---
+
+## 13. Ablation Axes
 
 | Axis | Default | Ablation |
 |------|---------|----------|
+| Policy family | Diffusion Policy | BC MSE baseline (`model.type=bc`) |
 | Denoiser backbone | CNN U-Net | Transformer |
 | Sampler | DDPM (training, T=100) | DDIM (deployment, 10 steps) |
 | Chunk length | T_p=16, T_a=4 in saved `main_96x96` | T_p=8/32, T_a=4/16 |

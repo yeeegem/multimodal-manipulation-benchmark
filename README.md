@@ -96,6 +96,47 @@ and [`diffusion_policy_soarm/docs/how_it_works.md`](diffusion_policy_soarm/docs/
 
 ---
 
+## BC baseline
+
+The behavior-cloning baseline (Phase 7) is the control for the multimodality
+result. It reuses the **identical** observation encoder and 2176-D conditioning
+vector, then swaps the iterative diffusion denoiser for a single-pass MLP head
+trained with MSE. Everything downstream (chunking, normalisation,
+receding-horizon execution) is unchanged.
+
+```mermaid
+flowchart LR
+  subgraph Observe["Observe: T_o = 2"]
+    Front["Front camera<br/>2 frames, 96 x 96"]
+    Wrist["Wrist camera<br/>2 frames, 96 x 96"]
+    State["Robot state<br/>2 x 6 joint angles"]
+  end
+
+  Front -->|ResNet18 per camera| F["Front features<br/>(2, 512)"]
+  Wrist -->|ResNet18 per camera| W["Wrist features<br/>(2, 512)"]
+  State -->|State MLP| S["State features<br/>(2, 64)"]
+
+  F --> C["Concatenate over cameras,<br/>state and time<br/>2176-D conditioning"]
+  W --> C
+  S --> C
+
+  C --> MLP["MLP head<br/>Linear + SiLU x N<br/>single forward pass"]
+  MLP --> Out["16-step action chunk<br/>absolute joint targets in degrees"]
+  Out --> Loss["Train: MSE vs demo chunk<br/>(no noise, no sampling loop)"]
+  Out --> Exec["Deploy: execute first T_a steps,<br/>then re-observe"]
+```
+
+The whole pipeline is **one deterministic regression** from observation to action
+chunk, where Diffusion Policy runs an iterative DDIM denoising loop. On the bimodal
+pick (left cube ~50%, right cube ~50%) the MSE optimum is the *average* of the two
+valid chunks, so the gripper drives into the empty gap between the cubes and grasps
+nothing. This regression-to-the-mean failure is exactly the behaviour the project
+sets out to measure against Diffusion Policy, which instead commits to one mode. See
+[`diffusion_policy_soarm/docs/bc_baseline_explained.ipynb`](diffusion_policy_soarm/docs/bc_baseline_explained.ipynb)
+for a runnable numerical demonstration.
+
+---
+
 ## What the model trains on
 
 A random batch of (front, wrist, state, action) after normalisation:

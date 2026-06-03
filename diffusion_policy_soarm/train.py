@@ -29,8 +29,7 @@ from tqdm import tqdm
 
 from diffusion_policy_soarm.data.dataset import DiffusionDataset
 from diffusion_policy_soarm.data.normalization import build_normalizers
-from diffusion_policy_soarm.models.diffusion import DiffusionModule, build_denoiser
-from diffusion_policy_soarm.models.encoders import ObservationEncoder
+from diffusion_policy_soarm.models.factory import build_policy
 from diffusion_policy_soarm.scripts.preextract_frames import preextract
 from diffusion_policy_soarm.utils.config import (
     load_config,
@@ -120,14 +119,15 @@ def move_batch(batch: dict, device: torch.device) -> dict:
 # Model factory
 # ---------------------------------------------------------------------------
 
-def build_model(cfg, ds: DiffusionDataset) -> tuple[DiffusionModule, dict]:
-    """Construct the full DiffusionModule from config and dataset."""
+def build_model(cfg, ds: DiffusionDataset) -> tuple[nn.Module, dict]:
+    """Construct the policy (diffusion or BC) from config and dataset."""
     normalizers = build_normalizers(ds.lerobot_dataset, cfg)
-    camera_keys = list(cfg.dataset.camera_keys)
-    encoder = ObservationEncoder(cfg, camera_keys=camera_keys, state_dim=ds.state_dim)
-    denoiser = build_denoiser(cfg, action_dim=ds.action_dim, obs_cond_dim=encoder.output_dim)
-    model = DiffusionModule(
-        cfg, encoder, denoiser, normalizers["action"], normalizers["state"]
+    model = build_policy(
+        cfg,
+        action_dim=ds.action_dim,
+        state_dim=ds.state_dim,
+        action_normalizer=normalizers["action"],
+        state_normalizer=normalizers["state"],
     )
     return model, normalizers
 
@@ -200,7 +200,7 @@ def run_training(
     episode_ids: list[int] | None = None,
     max_steps: int | None = None,
     resume_from: str | Path | None = None,
-) -> DiffusionModule:
+) -> nn.Module:
     """Main training loop.
 
     Args:
