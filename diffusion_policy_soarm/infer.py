@@ -262,10 +262,9 @@ def main(argv: list[str] | None = None) -> None:
 
     cfg = load_config(args.config, overrides or None)
 
-    # Override sampler to DDIM with the configured step count.
+    # Set inference steps from infer.num_ddim_steps; sampler comes from config/CLI.
     cfg = OmegaConf.merge(cfg, OmegaConf.create({
         "diffusion": {
-            "sampler": "ddim",
             "num_inference_steps": int(cfg.infer.num_ddim_steps),
         }
     }))

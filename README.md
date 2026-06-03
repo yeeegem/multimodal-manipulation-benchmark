@@ -44,28 +44,31 @@ only after Phase 8 (eval harness) and Phase 9 (ablations) complete.
 
 ```mermaid
 flowchart LR
-  subgraph IN["Observation window (T_o = 2 frames)"]
-    Front["front camera<br/>480 x 640 x 3 uint8<br/>(resized to 96 x 96)"]
-    Wrist["wrist camera<br/>480 x 640 x 3 uint8<br/>(resized to 96 x 96)"]
-    State["state 6-D<br/>(joint angles deg)"]
+  subgraph Observe["Observe: T_o = 2"]
+    Front["Front camera<br/>2 frames, 96 x 96"]
+    Wrist["Wrist camera<br/>2 frames, 96 x 96"]
+    State["Robot state<br/>2 x 6 joint angles"]
   end
 
-  Front -->|ResNet18 per camera| F["front features<br/>(2, 512)"]
-  Wrist -->|ResNet18 per camera| W["wrist features<br/>(2, 512)"]
-  State -->|Linear + SiLU| S["state embed<br/>(2, 64)"]
+  Front -->|ResNet18 per camera| F["Front features<br/>(2, 512)"]
+  Wrist -->|ResNet18 per camera| W["Wrist features<br/>(2, 512)"]
+  State -->|State MLP| S["State features<br/>(2, 64)"]
 
-  F --> C(("concat<br/>2176-D"))
+  F --> C["Concatenate over cameras,<br/>state and time<br/>2176-D conditioning"]
   W --> C
   S --> C
 
-  C --> UNet["1-D temporal U-Net<br/>FiLM conditioning<br/>channels 256 / 512 / 1024<br/>47M params"]
-  Noise["x_t noise (16, 6)"] --> UNet
-  TS["t embedding<br/>(sinusoid -> MLP -> 512)"] --> UNet
-  UNet --> EpsHat["epsilon-hat (16, 6)"]
+  C --> UNet["1-D temporal U-Net<br/>FiLM-conditioned denoiser<br/>input x_t, output eps_hat"]
+  Noise["Initial x_t<br/>Gaussian noise or warm start"] --> UNet
+  TS["t embedding<br/>sinusoid -> MLP"] --> UNet
+  UNet --> EpsHat["Predicted noise<br/>eps_hat"]
 
-  EpsHat --> DDIM["DDIM step (loops N times)"]
+  EpsHat --> DDIM["DDIM update<br/>x_t -> x_t-1<br/>repeat N times"]
   DDIM -->|x_t -> x_t-1| UNet
-  DDIM --> Out["actions (16, 6) deg<br/>saved main_96x96 executes first 4 then replan"]
+  DDIM --> Out["16-step action chunk<br/>absolute joint targets in degrees"]
+  Out --> Exec["Execute first T_a steps<br/>then re-observe"]
+  Exec --> Warm["Shift unexecuted suffix,<br/>pad tail, re-noise"]
+  Warm --> Noise
 ```
 
 </details>
