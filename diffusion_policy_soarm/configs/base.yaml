@@ -44,18 +44,14 @@ encoder:
   state_embed_dim: 64
 
 diffusion:
+  # Noise schedule / algorithm only. Used by both the training loss and the
+  # inference sampler. Inference-only sampler knobs live in the `infer` block.
   num_train_timesteps: 100
   # "cosine" schedule (Nichol & Dhariwal 2021) is the paper default.
   # Set to "linear" and tune beta_start/beta_end for the DDPM baseline.
   noise_schedule: "cosine"
   beta_start: 0.0001        # only used when noise_schedule == "linear"
   beta_end: 0.02            # only used when noise_schedule == "linear"
-  # Sampler used at inference. "ddpm" = full T-step ancestral; "ddim" = fast.
-  sampler: "ddpm"
-  # Number of denoising steps at inference. For DDPM this equals
-  # num_train_timesteps; for DDIM it can be much smaller (e.g. 10–20).
-  num_inference_steps: 100
-  clip_sample: true         # clip denoised actions to [-1, 1] each step
   prediction_type: "epsilon" # paper: predict the added noise, not x_0
 
 denoiser:
@@ -123,6 +119,14 @@ infer:
   robot_id: "valera"
   # T_a: how many steps of the chunk are actually executed before replanning.
   exec_horizon: 8
+  # Diffusion sampling at inference (the training loss never samples).
+  # "ddim" = fast, deterministic; "ddpm" = full T-step ancestral.
+  sampler: "ddim"
+  # Denoising steps per chunk. DDIM uses this many (10 is ~10x faster than full
+  # DDPM); DDPM ignores it and always runs the full num_train_timesteps schedule.
+  num_inference_steps: 10
+  # Clip the x_0 estimate to [-1, 1] at each denoising step.
+  clip_sample: true
   # Camera devices — 640x480 native; encoder resizes to dataset.image_size.
   cameras:
     front:
@@ -145,12 +149,10 @@ infer:
   camera_key_map:
     front: "observation.images.front"
     wrist: "observation.images.wrist"
-  # DDIM steps at inference. 10 steps is ~10x faster than full DDPM (100 steps).
-  num_ddim_steps: 10
   # torch.compile: ~30 s one-time warmup, then faster inference on repeated calls.
   compile: true
   # Feetech Acceleration register (raw 0-255). Default ~254 makes motors ramp
   # at near-max rate. Lower values (32-64) make commanded deltas execute more
   # slowly at the firmware level. Written to every motor after robot.connect();
   # persists until power cycle. Set null to leave at the firmware default.
-  motor_acceleration: 64
+  motor_acceleration: 150

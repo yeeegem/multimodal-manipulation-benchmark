@@ -154,7 +154,7 @@ inverted at inference.
 
 **Current step:** Phase 7 (BC baseline) landed in code; Phase 6 (autonomous-success
 gate on the arm) is paused. The diffusion model runs end-to-end at ~50 ms inference
-with DDIM at 10 steps (the default in `infer.py`, overridable on the CLI).
+with DDIM at 10 steps (the default in the `infer:` config block, overridable on the CLI).
 
 | # | Phase | Status | Output |
 |---|---|---|---|
@@ -423,7 +423,7 @@ Fix landed in one place:
 
 ### Phase 6: serial bus dropped at 100 DDIM steps
 
-Running with `infer.num_ddim_steps=100` (effectively full DDPM) produced
+Running with `infer.num_inference_steps=100` (effectively full DDPM) produced
 `ConnectionError: There is no status packet!` after a few hundred ms. The
 serial bus to the Feetech motors has its own packet timeout, and an
 inference call that took about 530 ms blew through it. DDIM at 5 to 10
