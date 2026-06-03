@@ -96,6 +96,47 @@ and [`diffusion_policy_soarm/docs/how_it_works.md`](diffusion_policy_soarm/docs/
 
 ---
 
+## BC baseline
+
+The behavior-cloning baseline (Phase 7) is the control for the multimodality
+result. It reuses the **identical** observation encoder and 2176-D conditioning
+vector, then swaps the iterative diffusion denoiser for a single-pass MLP head
+trained with MSE. Everything downstream (chunking, normalisation,
+receding-horizon execution) is unchanged.
+
+```mermaid
+flowchart LR
+  subgraph Observe["Observe: T_o = 2"]
+    Front["Front camera<br/>2 frames, 96 x 96"]
+    Wrist["Wrist camera<br/>2 frames, 96 x 96"]
+    State["Robot state<br/>2 x 6 joint angles"]
+  end
+
+  Front -->|ResNet18 per camera| F["Front features<br/>(2, 512)"]
+  Wrist -->|ResNet18 per camera| W["Wrist features<br/>(2, 512)"]
+  State -->|State MLP| S["State features<br/>(2, 64)"]
+
+  F --> C["Concatenate over cameras,<br/>state and time<br/>2176-D conditioning"]
+  W --> C
+  S --> C
+
+  C --> MLP["MLP head<br/>Linear + SiLU x N<br/>single forward pass"]
+  MLP --> Out["16-step action chunk<br/>absolute joint targets in degrees"]
+  Out --> Loss["Train: MSE vs demo chunk<br/>(no noise, no sampling loop)"]
+  Out --> Exec["Deploy: execute first T_a steps,<br/>then re-observe"]
+```
+
+The whole pipeline is **one deterministic regression** from observation to action
+chunk, where Diffusion Policy runs an iterative DDIM denoising loop. On the bimodal
+pick (left cube ~50%, right cube ~50%) the MSE optimum is the *average* of the two
+valid chunks, so the gripper drives into the empty gap between the cubes and grasps
+nothing. This regression-to-the-mean failure is exactly the behaviour the project
+sets out to measure against Diffusion Policy, which instead commits to one mode. See
+[`diffusion_policy_soarm/docs/bc_baseline_explained.ipynb`](diffusion_policy_soarm/docs/bc_baseline_explained.ipynb)
+for a runnable numerical demonstration.
+
+---
+
 ## What the model trains on
 
 A random batch of (front, wrist, state, action) after normalisation:
@@ -111,10 +152,9 @@ inverted at inference.
 
 ## Project plan and status
 
-**Current step:** Phase 6 (inference on the arm), gate pending. The model
-runs end-to-end at ~50 ms inference with DDIM at 10 steps; tuning
-warm-started replanning and the Feetech `Acceleration` register, then
-running the autonomous-success gate.
+**Current step:** Phase 7 (BC baseline) landed in code; Phase 6 (autonomous-success
+gate on the arm) is paused. The diffusion model runs end-to-end at ~50 ms inference
+with DDIM at 10 steps (the default in `infer.py`, overridable on the CLI).
 
 | # | Phase | Status | Output |
 |---|---|---|---|
@@ -124,8 +164,8 @@ running the autonomous-success gate.
 | 3 | Denoiser | done | ObservationEncoder 2176-D, ConditionalUNet1d 47M params, DiffusionModule end-to-end |
 | 4 | Training loop | done | EMA, AMP, cosine + warmup LR, checkpointing, TensorBoard |
 | 5 | Full training | done | 300 epochs at 96 x 96, final loss 0.00298, run `runs/main_96x96/20260528_185334` |
-| 6 | Inference on arm | in progress | `infer.py` complete; tuning warm-start + motor acceleration; gate = one autonomous success |
-| 7 | BC MSE baseline | todo | proves regression-to-mean failure on the bimodal task |
+| 6 | Inference on arm | paused | `infer.py` complete; gate = one autonomous success (deferred) |
+| 7 | BC MSE baseline | done | `models/bc.py` + `factory.py`, `configs/ablations/bc_baseline.yaml`, `tests/test_bc.py`, `docs/bc_baseline_explained.ipynb`; proves regression-to-mean on the bimodal task |
 | 8 | Eval harness (3 tiers) | todo | tier A in-distribution, tier B distractors, tier C OOD; failure-category logging |
 | 9 | Ablations | todo | see below |
 | 10 | Writeup | todo | mini-paper PDF (`diffusion_policy_soarm/docs/writeup.md` is the scaffold) |
@@ -158,7 +198,7 @@ and eval protocol):
 | Axis | Default | Variants tested |
 |---|---|---|
 | Image resolution | 96 x 96 | 480 x 640 (`configs/ablations/high_res.yaml`, already trained: `runs/ablation_high_res/20260527_102159/`) |
-| Action chunk length | T_p=16, T_a=4 in saved `main_96x96` | (T_p=8, T_a=4); (T_p=32, T_a=16) |
+| Action chunk length | T_p=16, T_a=8 (`base.yaml`; saved `main_96x96` used T_a=4) | (T_p=8, T_a=4); (T_p=32, T_a=16) |
 | Observation horizon | T_o=2 | T_o=1 (no implicit velocity); T_o=4 |
 | Action representation | absolute joint angles (deg) | per-step deltas (deg/tick); joint velocities (deg/s) |
 
@@ -180,13 +220,18 @@ diffusion_policy_soarm/
     cnn_backbone.py   # 1-D temporal U-Net denoiser with FiLM conditioning
     transformer_backbone.py  # Transformer denoiser (ablation)
     diffusion.py      # noise schedule, q_sample, loss, DDPM + DDIM samplers
+    bc.py             # behaviour-cloning baseline (MLP head + MSE)
+    factory.py        # build_policy: dispatch diffusion vs bc on model.type
+  utils/              # config loading/merging, global seeding
   train.py            # training entry point
   infer.py            # real-time receding-horizon inference loop
   eval/               # three-tier eval harness, failure logging, metrics
-  scripts/            # overfit sanity check, pre-extract frames, draw architecture
+  scripts/            # pre-extract video frames to disk
   docs/
     how_it_works.md             # maps DDPM math to code; start here
     main_96x96_explained.ipynb  # full walkthrough of the main run
+    main_96x96_audit.ipynb      # audit of the main run against the paper
+    bc_baseline_explained.ipynb # BC baseline walkthrough + mode-collapse demo
     architecture.png            # diagram embedded above
     writeup.md                  # mini-paper scaffold
 recordings/           # LeRobotDataset v3.0 (not committed; symlink or set path)
@@ -232,8 +277,8 @@ uv run python -m diffusion_policy_soarm.train \
 ```
 
 Runs are saved to `runs/<experiment>/<YYYYMMDD_HHMMSS>/`. Each run
-directory contains `config.yaml`, `git_hash.txt`, `tb/` (TensorBoard),
-and `checkpoints/` with `best.pt` and `latest.pt`.
+directory contains `config.yaml`, `tb/` (TensorBoard), and `checkpoints/`
+with `best.pt` and `latest.pt`.
 
 **Resume an interrupted run:**
 ```bash

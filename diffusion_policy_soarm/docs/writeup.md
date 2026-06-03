@@ -1,6 +1,6 @@
 # Diffusion Policy for Multimodal Manipulation: A Study on SO-ARM101
 
-*Vasili Areshka — [DATE]*
+*Vasili Areshka - [DATE]*
 
 ---
 
@@ -139,7 +139,7 @@ Among successful Diffusion Policy trials, **[PLACEHOLDER: X%]** chose the left c
 **Modelling:**
 - No classifier-free guidance; the policy cannot be steered by language or goal images
   at inference time.
-- The cosine schedule was not tuned for 6-DOF joint space — a schedule tailored to the
+- The cosine schedule was not tuned for 6-DOF joint space; a schedule tailored to the
   action range might improve sample quality.
 
 ---

@@ -43,6 +43,17 @@ class Batch(TypedDict):
     actions: torch.Tensor
 
 
+def frame_cache_dir(dataset_path: Path, image_size: tuple[int, int]) -> Path:
+    """Resolution-qualified frame-cache directory: ``<path>/frame_cache/<H>x<W>``.
+
+    Keying the cache by resolution lets multiple image sizes coexist (e.g. the
+    96x96 main run and the 480x640 ablation) and prevents silently loading frames
+    that were extracted at a different resolution than the current config wants.
+    """
+    h, w = image_size
+    return dataset_path / "frame_cache" / f"{h}x{w}"
+
+
 class DiffusionDataset(Dataset):
     """Maps a LeRobotDataset to (obs_window, action_chunk) training pairs.
 
@@ -62,13 +73,7 @@ class DiffusionDataset(Dataset):
         self,
         cfg: DictConfig,
         split: str = "train",
-        episode_ids: list[int] | None = None,
     ) -> None:
-        """
-        Args:
-            episode_ids: If provided, restrict the dataset to these episode indices.
-                Used by the overfit sanity check to train on a small subset.
-        """
         self.camera_keys: list[str] = list(cfg.dataset.camera_keys)
         self.state_key: str = cfg.dataset.state_key
         self.action_key: str = cfg.dataset.action_key
@@ -109,11 +114,12 @@ class DiffusionDataset(Dataset):
 
         # Build valid index list: exclude the last (pred_horizon - 1) frames of each
         # episode so every sample has a complete, unpadded action chunk.
-        self._valid_indices = self._compute_valid_indices(self._lerobot_ds, episode_ids)
+        self._valid_indices = self._compute_valid_indices(self._lerobot_ds)
 
         # Frame cache: if pre-extracted numpy arrays exist, use them instead of
-        # PyAV video decoding to keep the GPU fed at ~100%.
-        cache_dir = dataset_path / "frame_cache"
+        # PyAV video decoding to keep the GPU fed at ~100%.  The cache is keyed by
+        # resolution so caches for different image_size values never collide.
+        cache_dir = frame_cache_dir(dataset_path, self.image_size)
         self._use_cache = cache_dir.exists()
         self._preload_cache: bool = bool(getattr(cfg.dataset, "preload_cache", False))
         if self._use_cache:
@@ -150,13 +156,10 @@ class DiffusionDataset(Dataset):
         self._state_cache: np.ndarray = np.stack(df[self.state_key].values).astype(np.float32)
         self._action_cache: np.ndarray = np.stack(df[self.action_key].values).astype(np.float32)
 
-    def _compute_valid_indices(
-        self, ds: LeRobotDataset, episode_ids: list[int] | None
-    ) -> list[int]:
+    def _compute_valid_indices(self, ds: LeRobotDataset) -> list[int]:
         """Return global frame indices with complete pred_horizon-step futures."""
         valid: list[int] = []
-        ep_range = episode_ids if episode_ids is not None else range(ds.meta.total_episodes)
-        for i in ep_range:
+        for i in range(ds.meta.total_episodes):
             ep = ds.meta.episodes[i]
             from_idx: int = ep["dataset_from_index"]
             to_idx: int = ep["dataset_to_index"]  # exclusive upper bound

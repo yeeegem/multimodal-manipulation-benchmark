@@ -6,14 +6,12 @@ Usage:
         [--override diffusion_policy_soarm/configs/ablations/transformer_backbone.yaml] \\
         [key=value overrides, e.g. training.batch_size=8]
 
-The resolved config and git hash are saved to the run directory at startup.
+The resolved config is saved to the run directory at startup.
 """
 
 from __future__ import annotations
 
 import argparse
-import copy
-import math
 import os
 import warnings
 from pathlib import Path
@@ -27,10 +25,9 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from diffusion_policy_soarm.data.dataset import DiffusionDataset
+from diffusion_policy_soarm.data.dataset import DiffusionDataset, frame_cache_dir
 from diffusion_policy_soarm.data.normalization import build_normalizers
-from diffusion_policy_soarm.models.diffusion import DiffusionModule, build_denoiser
-from diffusion_policy_soarm.models.encoders import ObservationEncoder
+from diffusion_policy_soarm.models.factory import build_policy
 from diffusion_policy_soarm.scripts.preextract_frames import preextract
 from diffusion_policy_soarm.utils.config import (
     load_config,
@@ -39,176 +36,47 @@ from diffusion_policy_soarm.utils.config import (
     save_config,
 )
 from diffusion_policy_soarm.utils.seed import seed_everything
-
-
-# ---------------------------------------------------------------------------
-# EMA helper
-# ---------------------------------------------------------------------------
-
-class EMAModel:
-    """Exponential moving average of model parameters.
-
-    Maintains a shadow copy of all parameters.  The shadow copy is used at
-    eval/inference time for better generalisation.
-
-    Args:
-        model: Model whose parameters to track.
-        decay: EMA decay rate (typical: 0.9999).
-    """
-
-    def __init__(self, model: nn.Module, decay: float) -> None:
-        self.decay = decay
-        self.shadow = copy.deepcopy(model)
-        for p in self.shadow.parameters():
-            p.requires_grad_(False)
-
-    def update(self, model: nn.Module) -> None:
-        """θ_ema ← decay · θ_ema + (1 − decay) · θ"""
-        with torch.no_grad():
-            for s_p, m_p in zip(self.shadow.parameters(), model.parameters()):
-                s_p.mul_(self.decay).add_((1.0 - self.decay) * m_p.data)
-
-    def state_dict(self) -> dict:
-        return self.shadow.state_dict()
-
-    def to(self, device: torch.device) -> "EMAModel":
-        self.shadow = self.shadow.to(device)
-        return self
-
-
-# ---------------------------------------------------------------------------
-# LR scheduler with linear warm-up
-# ---------------------------------------------------------------------------
-
-def make_lr_scheduler(
-    optimizer: torch.optim.Optimizer,
-    warmup_steps: int,
-    total_steps: int,
-    schedule: str = "cosine",
-) -> torch.optim.lr_scheduler.LambdaLR:
-    """Cosine-decay LR scheduler with a linear warm-up phase."""
-
-    def lr_lambda(step: int) -> float:
-        if step < warmup_steps:
-            return step / max(1, warmup_steps)
-        if schedule == "cosine":
-            progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
-            return max(0.0, 0.5 * (1.0 + math.cos(math.pi * progress)))
-        return 1.0  # constant
-
-    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-
-
-# ---------------------------------------------------------------------------
-# Device helpers
-# ---------------------------------------------------------------------------
-
-def move_batch(batch: dict, device: torch.device) -> dict:
-    """Recursively move tensors (including nested image dicts) to device."""
-    out = {}
-    for k, v in batch.items():
-        if isinstance(v, torch.Tensor):
-            out[k] = v.to(device, non_blocking=True)
-        elif isinstance(v, dict):
-            out[k] = {kk: vv.to(device, non_blocking=True) for kk, vv in v.items()}
-        else:
-            out[k] = v
-    return out
+from diffusion_policy_soarm.utils.training import (
+    EMAModel,
+    load_checkpoint,
+    make_lr_scheduler,
+    move_batch,
+    resolve_checkpoint,
+    save_checkpoint,
+)
 
 
 # ---------------------------------------------------------------------------
 # Model factory
 # ---------------------------------------------------------------------------
 
-def build_model(cfg, ds: DiffusionDataset) -> tuple[DiffusionModule, dict]:
-    """Construct the full DiffusionModule from config and dataset."""
+def build_model(cfg, ds: DiffusionDataset) -> tuple[nn.Module, dict]:
+    """Construct the policy (diffusion or BC) from config and dataset."""
     normalizers = build_normalizers(ds.lerobot_dataset, cfg)
-    camera_keys = list(cfg.dataset.camera_keys)
-    encoder = ObservationEncoder(cfg, camera_keys=camera_keys, state_dim=ds.state_dim)
-    denoiser = build_denoiser(cfg, action_dim=ds.action_dim, obs_cond_dim=encoder.output_dim)
-    model = DiffusionModule(
-        cfg, encoder, denoiser, normalizers["action"], normalizers["state"]
+    model = build_policy(
+        cfg,
+        action_dim=ds.action_dim,
+        state_dim=ds.state_dim,
+        action_normalizer=normalizers["action"],
+        state_normalizer=normalizers["state"],
     )
     return model, normalizers
 
 
 # ---------------------------------------------------------------------------
-# Checkpoint helpers
+# Core training loop
 # ---------------------------------------------------------------------------
-
-def save_checkpoint(
-    run_dir: Path,
-    tag: str,
-    model: nn.Module,
-    ema: EMAModel,
-    optimizer: torch.optim.Optimizer,
-    scheduler: torch.optim.lr_scheduler.LambdaLR,
-    epoch: int,
-    step: int,
-) -> None:
-    ckpt = {
-        "epoch": epoch,
-        "step": step,
-        "model": model.state_dict(),
-        "ema": ema.state_dict(),
-        "optimizer": optimizer.state_dict(),
-        "scheduler": scheduler.state_dict(),
-    }
-    ckpt_dir = run_dir / "checkpoints"
-    ckpt_dir.mkdir(exist_ok=True)
-    torch.save(ckpt, ckpt_dir / f"{tag}.pt")
-
-
-def load_checkpoint(
-    path: Path,
-    model: nn.Module,
-    ema: EMAModel,
-    optimizer: torch.optim.Optimizer,
-    scheduler: torch.optim.lr_scheduler.LambdaLR,
-) -> tuple[int, int]:
-    ckpt = torch.load(path, weights_only=True)
-    model.load_state_dict(ckpt["model"])
-    ema.shadow.load_state_dict(ckpt["ema"])
-    optimizer.load_state_dict(ckpt["optimizer"])
-    scheduler.load_state_dict(ckpt["scheduler"])
-    return ckpt["epoch"], ckpt["step"]
-
-
-# ---------------------------------------------------------------------------
-# Core training loop (shared between train.py and overfit_check.py)
-# ---------------------------------------------------------------------------
-
-def resolve_checkpoint(resume: str | Path) -> Path:
-    """Return the checkpoint .pt path from a file or run-directory argument.
-
-    Accepts either:
-    - A direct path to a ``.pt`` file.
-    - A run directory — auto-selects ``checkpoints/latest.pt``.
-    """
-    p = Path(resume)
-    if p.is_file():
-        return p
-    latest = p / "checkpoints" / "latest.pt"
-    if latest.exists():
-        return latest
-    raise FileNotFoundError(f"No checkpoint found at {resume}")
-
 
 def run_training(
     cfg,
     run_dir: Path,
-    episode_ids: list[int] | None = None,
-    max_steps: int | None = None,
     resume_from: str | Path | None = None,
-) -> DiffusionModule:
+) -> nn.Module:
     """Main training loop.
 
     Args:
         cfg: Resolved OmegaConf config.
         run_dir: Directory to write logs, checkpoints, and config.
-        episode_ids: If set, restrict training to these episode indices
-            (used by the overfit sanity check).
-        max_steps: Hard stop after this many gradient steps (overfit check).
         resume_from: Path to a checkpoint ``.pt`` file or a run directory
             containing ``checkpoints/latest.pt``.  When provided, model /
             EMA / optimiser / scheduler states are restored and training
@@ -221,13 +89,13 @@ def run_training(
     print(f"Device: {device}")
 
     # --- Frame cache check --------------------------------------------------
-    cache_dir = Path(cfg.dataset.path) / "frame_cache"
+    cache_dir = frame_cache_dir(Path(cfg.dataset.path), tuple(cfg.dataset.image_size))
     if not cache_dir.exists():
         print("Frame cache not found. Running preextract_frames automatically...")
         preextract(cfg, num_workers=os.cpu_count())
 
     # --- Dataset & dataloader -----------------------------------------------
-    ds = DiffusionDataset(cfg, episode_ids=episode_ids)
+    ds = DiffusionDataset(cfg)
     print(f"Training samples: {len(ds)}")
 
     # persistent_workers=False: PyAV video decoding deadlocks with persistent workers.
@@ -320,9 +188,6 @@ def run_training(
 
             pbar.set_postfix(loss=f"{loss_val:.4f}")
 
-            if max_steps is not None and step >= max_steps:
-                break
-
         mean_loss = sum(epoch_losses) / len(epoch_losses)
         writer.add_scalar("train/epoch_loss", mean_loss, epoch)
         print(f"Epoch {epoch+1:4d}  loss={mean_loss:.5f}  lr={scheduler.get_last_lr()[0]:.2e}")
@@ -332,9 +197,6 @@ def run_training(
             save_checkpoint(run_dir, "best", model, ema, optimizer, scheduler, epoch, step)
 
         save_checkpoint(run_dir, "latest", model, ema, optimizer, scheduler, epoch, step)
-
-        if max_steps is not None and step >= max_steps:
-            break
 
     writer.close()
     return ema.shadow

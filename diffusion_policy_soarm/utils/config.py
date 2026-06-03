@@ -1,7 +1,6 @@
 """Config loading, CLI override merging, and per-run directory setup."""
 
 import datetime
-import subprocess
 from pathlib import Path
 
 from omegaconf import DictConfig, OmegaConf
@@ -37,8 +36,6 @@ def resolve_run_dir(cfg: DictConfig) -> Path:
     Layout:
     - With experiment name: ``<run_dir>/<experiment>/<YYYYMMDD_HHMMSS>/``
     - Without:              ``<run_dir>/<YYYYMMDD_HHMMSS>/``
-
-    The git hash is saved inside the directory (``git_hash.txt``), not in the name.
     """
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     experiment = getattr(cfg.training, "experiment", "") or ""
@@ -49,20 +46,8 @@ def resolve_run_dir(cfg: DictConfig) -> Path:
 
 
 def save_config(cfg: DictConfig, run_dir: Path) -> None:
-    """Persist the resolved config and git hash to *run_dir*.
+    """Persist the resolved config to *run_dir*.
 
-    Files written:
-    - ``config.yaml``: fully-resolved OmegaConf dump (all overrides applied).
-    - ``git_hash.txt``: full commit SHA for exact reproduction.
+    Writes ``config.yaml``: the fully-resolved OmegaConf dump (all overrides applied).
     """
     OmegaConf.save(cfg, run_dir / "config.yaml")
-    (run_dir / "git_hash.txt").write_text(_git_hash(short=False) + "\n")
-
-
-def _git_hash(short: bool = True) -> str:
-    flag = "--short" if short else None
-    cmd = ["git", "rev-parse"] + ([flag] if flag else []) + ["HEAD"]
-    try:
-        return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout.strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return "unknown"

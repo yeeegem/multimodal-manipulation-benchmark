@@ -21,6 +21,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
 from lerobot.robots.so_follower.config_so_follower import SOFollowerRobotConfig
@@ -28,12 +29,8 @@ from lerobot.robots.so_follower.so_follower import SOFollower
 from omegaconf import OmegaConf
 
 from diffusion_policy_soarm.data.normalization import Normalizer
-from diffusion_policy_soarm.models.diffusion import (
-    DiffusionModule,
-    build_denoiser,
-    shift_action_chunk_for_warm_start,
-)
-from diffusion_policy_soarm.models.encoders import ObservationEncoder
+from diffusion_policy_soarm.models.diffusion import shift_action_chunk_for_warm_start
+from diffusion_policy_soarm.models.factory import build_policy
 from diffusion_policy_soarm.utils.config import load_config
 
 
@@ -41,21 +38,25 @@ from diffusion_policy_soarm.utils.config import load_config
 # Model construction
 # ---------------------------------------------------------------------------
 
-def _build_inference_model(cfg, run_dir: Path) -> DiffusionModule:
-    """Build DiffusionModule from saved normalizer files (no dataset needed).
+def _build_inference_model(cfg, run_dir: Path) -> nn.Module:
+    """Build the policy from saved normalizer files (no dataset needed).
 
     Derives action_dim and state_dim from the normalizer JSON files saved
-    alongside the checkpoint, then assembles encoder + denoiser + module.
+    alongside the checkpoint, then assembles the policy selected by
+    ``cfg.model.type`` (diffusion or BC) via ``build_policy``.
     """
     action_norm = Normalizer.from_file(run_dir / "action_normalizer.json")
     state_norm = Normalizer.from_file(run_dir / "state_normalizer.json")
     action_dim = int(action_norm.mins.shape[0])
     state_dim = int(state_norm.mins.shape[0])
 
-    camera_keys = list(cfg.dataset.camera_keys)
-    encoder = ObservationEncoder(cfg, camera_keys=camera_keys, state_dim=state_dim)
-    denoiser = build_denoiser(cfg, action_dim=action_dim, obs_cond_dim=encoder.output_dim)
-    return DiffusionModule(cfg, encoder, denoiser, action_norm, state_norm)
+    return build_policy(
+        cfg,
+        action_dim=action_dim,
+        state_dim=state_dim,
+        action_normalizer=action_norm,
+        state_normalizer=state_norm,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +152,7 @@ def _preprocess_obs_buffer(
 
 def _run_loop(
     cfg,
-    model: DiffusionModule,
+    model: nn.Module,
     robot: SOFollower | None,
     motor_names: list[str],
     dry_run: bool,
@@ -260,14 +261,19 @@ def main(argv: list[str] | None = None) -> None:
     )
     args, overrides = parser.parse_known_args(argv)
 
-    cfg = load_config(args.config, overrides or None)
+    cfg = load_config(args.config)
 
-    # Set inference steps from infer.num_ddim_steps; sampler comes from config/CLI.
+    # Inference defaults to fast DDIM with infer.num_ddim_steps. Applied before the
+    # CLI overrides below so an explicit "diffusion.sampler=ddpm" (or a custom
+    # num_inference_steps) still wins.
     cfg = OmegaConf.merge(cfg, OmegaConf.create({
         "diffusion": {
+            "sampler": "ddim",
             "num_inference_steps": int(cfg.infer.num_ddim_steps),
         }
     }))
+    if overrides:
+        cfg = OmegaConf.merge(cfg, OmegaConf.from_dotlist(overrides))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
