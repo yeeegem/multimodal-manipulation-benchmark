@@ -5,7 +5,7 @@ Usage:
         --checkpoint runs/<experiment>/<timestamp>/checkpoints/best.pt \\
         --config runs/<experiment>/<timestamp>/config.yaml \\
         [--dry-run] \\
-        [key=value overrides, e.g. infer.num_ddim_steps=5]
+        [key=value overrides, e.g. infer.num_inference_steps=5]
 
 Latency budget: observation capture + DDIM sampling must finish within one
 step period (1/fps ≈ 33 ms at 30 Hz).  Use --dry-run to test without the arm.
@@ -261,19 +261,9 @@ def main(argv: list[str] | None = None) -> None:
     )
     args, overrides = parser.parse_known_args(argv)
 
-    cfg = load_config(args.config)
-
-    # Inference defaults to fast DDIM with infer.num_ddim_steps. Applied before the
-    # CLI overrides below so an explicit "diffusion.sampler=ddpm" (or a custom
-    # num_inference_steps) still wins.
-    cfg = OmegaConf.merge(cfg, OmegaConf.create({
-        "diffusion": {
-            "sampler": "ddim",
-            "num_inference_steps": int(cfg.infer.num_ddim_steps),
-        }
-    }))
-    if overrides:
-        cfg = OmegaConf.merge(cfg, OmegaConf.from_dotlist(overrides))
+    # The `infer` block already defaults to sampler=ddim; override on the CLI with
+    # e.g. infer.sampler=ddpm or infer.num_inference_steps=5.
+    cfg = load_config(args.config, overrides or None)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")

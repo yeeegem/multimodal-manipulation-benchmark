@@ -86,17 +86,19 @@ class DiffusionModule(nn.Module):
         self._build_sampler()
 
     def _build_sampler(self) -> None:
-        clip = self.cfg.diffusion.clip_sample
-        if self.cfg.diffusion.sampler == "ddpm":
+        # Sampler config lives in the `infer` block (inference-only); the schedule
+        # itself comes from `diffusion`.
+        clip = self.cfg.infer.clip_sample
+        if self.cfg.infer.sampler == "ddpm":
             self._sampler = DDPMSampler(self.schedule, clip_sample=clip)
-        elif self.cfg.diffusion.sampler == "ddim":
+        elif self.cfg.infer.sampler == "ddim":
             self._sampler = DDIMSampler(
                 self.schedule,
-                num_inference_steps=self.cfg.diffusion.num_inference_steps,
+                num_inference_steps=self.cfg.infer.num_inference_steps,
                 clip_sample=clip,
             )
         else:
-            raise ValueError(f"Unknown sampler: {self.cfg.diffusion.sampler!r}")
+            raise ValueError(f"Unknown sampler: {self.cfg.infer.sampler!r}")
 
     def compute_loss(self, batch: dict) -> torch.Tensor:
         """Training forward pass.
