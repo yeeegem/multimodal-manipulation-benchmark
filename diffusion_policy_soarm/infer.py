@@ -4,11 +4,10 @@ Usage:
     uv run python -m diffusion_policy_soarm.infer \\
         --checkpoint runs/<experiment>/<timestamp>/checkpoints/best.pt \\
         --config runs/<experiment>/<timestamp>/config.yaml \\
-        [--dry-run] \\
         [key=value overrides, e.g. infer.num_inference_steps=5]
 
 Latency budget: observation capture + DDIM sampling must finish within one
-step period (1/fps ≈ 33 ms at 30 Hz).  Use --dry-run to test without the arm.
+step period (1/fps ≈ 33 ms at 30 Hz).
 """
 
 from __future__ import annotations
@@ -125,12 +124,9 @@ def _preprocess_obs_buffer(
         stacked = torch.stack(frames, dim=0)
 
         # Cameras capture at 480x640; the encoder was trained on 96x96.
-        # Skip the interpolate call when shapes already match (dry-run uses
-        # synthetic frames already at target size).
-        if stacked.shape[-2:] != (target_h, target_w):
-            stacked = F.interpolate(
-                stacked, size=(target_h, target_w), mode="bilinear", align_corners=False
-            )
+        stacked = F.interpolate(
+            stacked, size=(target_h, target_w), mode="bilinear", align_corners=False
+        )
 
         # Prepend batch dim → (1, T_o, C, H, W) and move to GPU.
         images[dataset_key] = stacked.unsqueeze(0).to(device)
@@ -153,15 +149,14 @@ def _preprocess_obs_buffer(
 def _run_loop(
     cfg,
     model: nn.Module,
-    robot: SOFollower | None,
+    robot: SOFollower,
     motor_names: list[str],
-    dry_run: bool,
     device: torch.device,
 ) -> None:
     """Receding-horizon control loop.
 
     Each iteration:
-      1. Capture one fresh observation (or use synthetic obs in dry-run).
+      1. Capture one fresh observation.
       2. Build model batch from obs_horizon-length rolling buffer.
       3. Run DDIM inference to get a pred_horizon-step action chunk.
       4. Execute exec_horizon steps at 1/fps Hz, then replan.
@@ -180,18 +175,8 @@ def _run_loop(
     obs_buffer: collections.deque = collections.deque(maxlen=obs_horizon)
 
     # Pre-fill observation buffer with obs_horizon frames before the loop.
-    if dry_run:
-        cam_names = list(camera_key_map.keys())
-        cam_h = int(cfg.infer.cameras[cam_names[0]].height)
-        cam_w = int(cfg.infer.cameras[cam_names[0]].width)
-        for _ in range(obs_horizon):
-            fake: dict = {name: np.zeros((cam_h, cam_w, 3), dtype=np.uint8) for name in cam_names}
-            for m in motor_names:
-                fake[f"{m}.pos"] = 0.0
-            obs_buffer.append(fake)
-    else:
-        for _ in range(obs_horizon):
-            obs_buffer.append(robot.get_observation())
+    for _ in range(obs_horizon):
+        obs_buffer.append(robot.get_observation())
 
     warm_start_actions_norm: torch.Tensor | None = None
 
@@ -200,8 +185,7 @@ def _run_loop(
     while True:
         t0 = time.perf_counter()
 
-        if not dry_run:
-            obs_buffer.append(robot.get_observation())
+        obs_buffer.append(robot.get_observation())
 
         batch = _preprocess_obs_buffer(obs_buffer, camera_key_map, motor_names, image_size, device)
 
@@ -230,10 +214,9 @@ def _run_loop(
 
         for i in range(exec_horizon):
             step_t0 = time.perf_counter()
-            if not dry_run:
-                action_vec = chunk[i].cpu().numpy().astype(np.float32)
-                action_dict = {f"{m}.pos": float(v) for m, v in zip(motor_names, action_vec)}
-                robot.send_action(action_dict)
+            action_vec = chunk[i].cpu().numpy().astype(np.float32)
+            action_dict = {f"{m}.pos": float(v) for m, v in zip(motor_names, action_vec)}
+            robot.send_action(action_dict)
             elapsed = time.perf_counter() - step_t0
             remaining = step_duration - elapsed
             if remaining > 0:
@@ -254,11 +237,6 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Real-time Diffusion Policy inference on SO-ARM101.")
     parser.add_argument("--checkpoint", required=True, help="Path to EMA checkpoint .pt file.")
     parser.add_argument("--config", required=True, help="Path to run config.yaml.")
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Skip robot connect/send; run inference on synthetic observations.",
-    )
     args, overrides = parser.parse_known_args(argv)
 
     # The `infer` block already defaults to sampler=ddim; override on the CLI with
@@ -282,50 +260,42 @@ def main(argv: list[str] | None = None) -> None:
         print("Compiling model with torch.compile (~30 s one-time warmup)...")
         model = torch.compile(model)
 
-    if not args.dry_run:
-        cameras = {
-            name: OpenCVCameraConfig(
-                index_or_path=cam_cfg.path,
-                width=cam_cfg.width,
-                height=cam_cfg.height,
-                fps=cam_cfg.fps,
-                fourcc=cam_cfg.fourcc,
-                backend=cam_cfg.backend,
-            )
-            for name, cam_cfg in cfg.infer.cameras.items()
-        }
-        robot_cfg = SOFollowerRobotConfig(
-            port=cfg.infer.robot_port,
-            id=cfg.infer.robot_id,
-            cameras=cameras,
+    cameras = {
+        name: OpenCVCameraConfig(
+            index_or_path=cam_cfg.path,
+            width=cam_cfg.width,
+            height=cam_cfg.height,
+            fps=cam_cfg.fps,
+            fourcc=cam_cfg.fourcc,
+            backend=cam_cfg.backend,
         )
-        robot = SOFollower(robot_cfg)
-        robot.connect()
-        motor_names = list(robot.bus.motors.keys())
-        print(f"Robot connected. Motors: {motor_names}")
+        for name, cam_cfg in cfg.infer.cameras.items()
+    }
+    robot_cfg = SOFollowerRobotConfig(
+        port=cfg.infer.robot_port,
+        id=cfg.infer.robot_id,
+        cameras=cameras,
+    )
+    robot = SOFollower(robot_cfg)
+    robot.connect()
+    motor_names = list(robot.bus.motors.keys())
+    print(f"Robot connected. Motors: {motor_names}")
 
-        # Lower the Feetech firmware-side acceleration ramp so commanded deltas
-        # execute more gently. Persists until power cycle.
-        accel = OmegaConf.select(cfg, "infer.motor_acceleration", default=None)
-        if accel is not None:
-            for motor in motor_names:
-                robot.bus.write("Acceleration", motor, int(accel))
-            print(f"Wrote Acceleration={int(accel)} to all {len(motor_names)} motors.")
-    else:
-        robot = None
-        state_norm = Normalizer.from_file(run_dir / "state_normalizer.json")
-        state_dim = int(state_norm.mins.shape[0])
-        motor_names = [f"motor_{i}" for i in range(state_dim)]
-        print(f"Dry-run mode. Simulating {state_dim} motors, {list(cfg.infer.cameras)!r} cameras.")
+    # Lower the Feetech firmware-side acceleration ramp so commanded deltas
+    # execute more gently. Persists until power cycle.
+    accel = OmegaConf.select(cfg, "infer.motor_acceleration", default=None)
+    if accel is not None:
+        for motor in motor_names:
+            robot.bus.write("Acceleration", motor, int(accel))
+        print(f"Wrote Acceleration={int(accel)} to all {len(motor_names)} motors.")
 
     try:
-        _run_loop(cfg, model, robot, motor_names, args.dry_run, device)
+        _run_loop(cfg, model, robot, motor_names, device)
     except KeyboardInterrupt:
         print("\nStopped by user.")
     finally:
-        if robot is not None:
-            robot.disconnect()
-            print("Robot disconnected.")
+        robot.disconnect()
+        print("Robot disconnected.")
 
 
 if __name__ == "__main__":
