@@ -209,8 +209,11 @@ def _run_loop(
             actions_norm, exec_horizon
         ).detach()
 
-        # print("actions:", actions[0, :4].cpu().numpy())  # first 4 steps
-        # print("state:  ", batch["state"][0, -1].cpu().numpy())  # current position
+        # print("================")
+        # print(motor_names)
+        # print("actions_norm:\n", actions_norm[0, :4].cpu().numpy())  # first 4 steps
+        # state_norm = model.state_normalizer(batch["state"])
+        # print("state:\n", state_norm[0, -1].cpu().numpy())  # current position
 
         for i in range(exec_horizon):
             step_t0 = time.perf_counter()
