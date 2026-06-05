@@ -1,14 +1,14 @@
 """LeRobot dataset wrapper producing (observation history, action chunk) samples.
 
 Design decisions:
-- We use LeRobotDataset's ``delta_timestamps`` to fetch obs_horizon past frames and
+- Uses LeRobotDataset's ``delta_timestamps`` to fetch obs_horizon past frames and
   pred_horizon future frames in a single __getitem__ call, avoiding any manual
   frame-lookup logic.
 - Valid indices exclude the last (pred_horizon - 1) frames of each episode so that
   every training sample has a complete, unpadded action chunk. Episode-start padding
   for observations is kept (the policy must handle it at deployment time too).
 - Images are resized in __getitem__ from native 480×640 to the config-specified size.
-  We use torch.nn.functional.interpolate treating the time dimension as batch.
+  Resizing uses torch.nn.functional.interpolate treating the time dimension as batch.
 - The dataset returns raw (unnormalised) tensors; normalisation is applied in the
   training loop via Normalizer so that the stats can be inspected and saved separately.
 """

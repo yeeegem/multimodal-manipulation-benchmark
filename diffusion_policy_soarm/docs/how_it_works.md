@@ -35,7 +35,7 @@ test: x at t=0 should be near the clean action; x at t=T should be near unit Gau
 
 ## 3. The Noise Schedule
 
-We use the **cosine schedule** from Nichol & Dhariwal (2021):
+I use the **cosine schedule** from Nichol & Dhariwal (2021):
 
     ᾱₜ = cos²( (t/T + s) / (1 + s) · π/2 ) / cos²( s / (1 + s) · π/2 )
 
@@ -49,7 +49,7 @@ actions (which have less redundancy than images).
 
 ## 4. Training Objective: Epsilon Prediction
 
-We train a neural network ε_θ(xₜ, t, c) to predict the noise ε that was added:
+I train a neural network ε_θ(xₜ, t, c) to predict the noise ε that was added:
 
     L = E_{x₀, t, ε} [ ‖ε_θ(xₜ, t, c) − ε‖² ]
 
@@ -78,7 +78,7 @@ c is the concatenation of:
 **Note:** This is *not* classifier-free guidance (CFG). CFG requires training an
 unconditional model alongside the conditional one and interpolating at inference. The
 original Diffusion Policy paper does not use CFG - it directly conditions the denoiser
-on observations. We follow the paper here.
+on observations. I follow the paper here.
 
 **Code location:** `models/encoders.py` → `ObservationEncoder`.
 
@@ -117,7 +117,7 @@ steps avoids the discontinuities that arise from per-step replanning.
 
 ## 8. DDPM Sampling (Inference)
 
-To sample a clean action at inference, we reverse the diffusion chain:
+To sample a clean action at inference, reverse the diffusion chain:
 
 1. Start from xₜ ~ N(0, I).
 2. For t = T, T-1, ..., 1:
