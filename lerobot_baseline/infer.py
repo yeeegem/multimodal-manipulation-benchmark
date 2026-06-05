@@ -5,8 +5,8 @@ Usage:
         --checkpoint lerobot_baseline/runs/main/checkpoints/100000/pretrained_model
 
 LeRobot's policy does NOT apply normalization inside select_action -- the
-preprocessor/postprocessor pipeline is separate. We load the saved stats and
-apply them manually:
+preprocessor/postprocessor pipeline is separate. The saved stats are loaded and
+applied manually:
   - state: MIN_MAX normalize before passing to policy
   - images: ImageNet MEAN_STD normalize before passing to policy
   - action: MIN_MAX unnormalize after select_action

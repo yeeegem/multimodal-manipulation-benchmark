@@ -6,12 +6,12 @@
 
 ## Abstract
 
-We reimplement Diffusion Policy (Chi et al., 2023) from scratch in plain PyTorch and
+I reimplement Diffusion Policy (Chi et al., 2023) from scratch in plain PyTorch and
 evaluate it on a deliberately multimodal pick-and-place task: place either of two
 identical red cubes into a blue cup using an SO-ARM101 arm. The demonstration data is
-50/50 bimodal (left cube vs. right cube). We show that Diffusion Policy commits to one
+50/50 bimodal (left cube vs. right cube). I show that Diffusion Policy commits to one
 mode and succeeds at the task, while a behaviour-cloning MSE baseline regresses to the
-mean and fails to grasp either cube. We ablate denoiser backbone (CNN vs. Transformer),
+mean and fails to grasp either cube. I ablate denoiser backbone (CNN vs. Transformer),
 sampler (DDPM vs. DDIM), and action chunk length, and report a three-tier evaluation
 covering in-distribution, out-of-distribution, and distractor conditions.
 
@@ -127,7 +127,7 @@ Among successful Diffusion Policy trials, **[PLACEHOLDER: X%]** chose the left c
 ## 5. Limitations and Future Work
 
 **Eval axes this object set cannot test:**
-- **Size/shape variation:** Both target cubes are identical; we cannot measure whether
+- **Size/shape variation:** Both target cubes are identical; this cannot measure whether
   the policy generalises to objects of different size or shape.
 - **Mass and friction:** All objects are uniform; dynamic grasping under varying load
   is untested.

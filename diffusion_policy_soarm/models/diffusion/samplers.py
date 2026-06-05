@@ -141,7 +141,7 @@ class DDIMSampler:
         self.num_steps = num_inference_steps
 
         # Sub-sample T training steps evenly into num_inference_steps steps.
-        # We pick indices that are roughly evenly spaced in [0, T-1], ending at T-1.
+        # Pick indices that are roughly evenly spaced in [0, T-1], ending at T-1.
         step_ratio = T // num_inference_steps
         timesteps = (torch.arange(num_inference_steps) * step_ratio).long()
         timesteps = timesteps + (T - 1 - timesteps[-1])  # shift so last = T-1

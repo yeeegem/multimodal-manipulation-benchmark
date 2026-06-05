@@ -3,7 +3,7 @@
 Eliminates PyAV video decoding from the training hot-path: __getitem__ becomes
 a numpy mmap read instead of a seek + decode, pushing GPU utilisation to ~100%.
 
-Video files contain extra reset frames between episodes.  We use LeRobot's own
+Video files contain extra reset frames between episodes.  This uses LeRobot's own
 decoder so the timestamp mapping is always correct regardless of how the video
 was encoded.
 

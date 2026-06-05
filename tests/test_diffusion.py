@@ -194,7 +194,7 @@ def test_ddpm_sampler_stays_in_bounds_with_clip(cosine_schedule):
     """clip_sample clips the intermediate x̂_0 estimate each step.
 
     The final output is the posterior mean μ̃_t = coef1·x̂_0 + coef2·x_t, which
-    can be slightly outside [−1,1] because x_t is not clipped.  We verify the
+    can be slightly outside [−1,1] because x_t is not clipped.  This checks the
     output is bounded (not exploding), not that it is strictly in [−1,1].
     """
     sampler = DDPMSampler(cosine_schedule, clip_sample=True)

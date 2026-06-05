@@ -5,8 +5,8 @@ Design decisions:
   assume the clean signal lives in a bounded interval.  Z-score does not guarantee
   this and can produce outliers outside the clipping range.
 - Stats are read from LeRobotDataset's pre-computed ``meta.stats`` (derived from
-  the full training set at recording time), so we never need to decode video frames
-  just to compute normalisation constants.
+  the full training set at recording time), so decoding video frames just to
+  compute normalisation constants is never needed.
 - The Normalizer is an nn.Module so that ``register_buffer`` keeps tensors on the
   same device as the model without manual ``.to(device)`` calls at every use site.
 - Stats are saved to disk alongside each checkpoint as a human-readable JSON file,
