@@ -45,8 +45,8 @@ only after Phase 8 (eval harness) and Phase 9 (ablations) complete.
 ```mermaid
 flowchart LR
   subgraph Observe["Observe: T_o = 2"]
-    Front["Front camera<br/>2 frames, 96 x 96"]
-    Wrist["Wrist camera<br/>2 frames, 96 x 96"]
+    Front["Front camera<br/>2 frames, 480 x 640"]
+    Wrist["Wrist camera<br/>2 frames, 480 x 640"]
     State["Robot state<br/>2 x 6 joint angles"]
   end
 
@@ -83,16 +83,6 @@ vector**. The 47M-parameter 1-D temporal U-Net then denoises a random
 sent to the arm as **absolute joint-angle setpoints**; the Feetech motors'
 firmware-side PID controllers do the actual position control.
 
-For historical accuracy: the saved `main_96x96` run at
-`runs/main_96x96/20260528_185334/` used a legacy vision encoder variant
-(ImageNet-pretrained ResNet18 with average pooling and BatchNorm) and
-`infer.exec_horizon=4`. The current `configs/base.yaml` has been updated to the
-paper-faithful vision stack (GroupNorm + spatial softmax + no pretraining)
-for future runs.
-
-For a step-by-step walk-through with code references and the inference
-walkthrough, see [`diffusion_policy_soarm/docs/main_96x96_explained.ipynb`](diffusion_policy_soarm/docs/main_96x96_explained.ipynb)
-and [`diffusion_policy_soarm/docs/how_it_works.md`](diffusion_policy_soarm/docs/how_it_works.md).
 
 ---
 
@@ -107,8 +97,8 @@ receding-horizon execution) is unchanged.
 ```mermaid
 flowchart LR
   subgraph Observe["Observe: T_o = 2"]
-    Front["Front camera<br/>2 frames, 96 x 96"]
-    Wrist["Wrist camera<br/>2 frames, 96 x 96"]
+    Front["Front camera<br/>2 frames, 480 x 640"]
+    Wrist["Wrist camera<br/>2 frames, 480 x 640"]
     State["Robot state<br/>2 x 6 joint angles"]
   end
 
@@ -197,7 +187,7 @@ and eval protocol):
 
 | Axis | Default | Variants tested |
 |---|---|---|
-| Image resolution | 480 x 640 (native, no resizing) | 96 x 96 (`dataset.image_size=[96,96]`, faster ablation run) |
+| Image resolution | 480 x 640 (native) | 96 x 96 (`dataset.image_size=[96,96]`, faster run) |
 | Action chunk length | T_p=16, T_a=8 (`base.yaml`; saved `main_96x96` used T_a=4) | (T_p=8, T_a=4); (T_p=32, T_a=16) |
 | Observation horizon | T_o=2 | T_o=1 (no implicit velocity); T_o=4 |
 | Action representation | absolute joint angles (deg) | per-step deltas (deg/tick); joint velocities (deg/s) |
@@ -351,20 +341,12 @@ noise.
 All numbers below are wall-clock on a single NVIDIA RTX A5000 (24 GB VRAM,
 RTX 3080-class compute, similar TFLOPs to a consumer RTX 3080).
 
+Single NVIDIA RTX A5000 (16 GB VRAM, laptop GPU).
+
 | Run | Resolution | Epochs | Wall clock |
 |---|---|---|---|
-| Initial attempt (high-res) | 480 x 640 | 150 | over 24 hours |
-| Main run (`main_96x96`) | 96 x 96 | 300 | 2 to 3 hours |
-| High-res ablation (retained for Phase 9) | 480 x 640 | 150 | over 24 hours |
-
-The first training pass was at native 480 x 640. After observing that a
-single 150-epoch run took more than a day on the A5000, the main
-resolution was switched to 96 x 96 (ResNet18 globally pools, so spatial
-size is a free hyperparameter). 96 x 96 brings a 300-epoch run down to
-2 to 3 hours, fits the entire `recordings/redcubes_bluecup` frame cache
-in 0.9 GB of RAM, and keeps batch size at 256 inside 16 GB VRAM. The
-high-res run is kept as a Phase 9 ablation to measure how much visual
-fidelity actually matters for this task.
+| Baseline | 480 x 640 | 80 | ~22 hours |
+| 96 x 96 ablation | 96 x 96 | 80 | TBD |
 
 ---
 
@@ -372,17 +354,6 @@ fidelity actually matters for this task.
 
 A short retrospective of issues that actually slowed the project down and
 how they were resolved. These shaped several of the design choices above.
-
-### Phase 5: high-resolution training was too slow
-
-The first full training pass was at native 480 x 640. On the RTX A5000 a
-single 150-epoch run took over 24 hours, with the GPU mostly idle waiting
-on the encoder's per-camera ResNet18 to chew through 307200-pixel frames
-at batch size 16. ResNet18 globally pools, so spatial size is a free
-hyperparameter: switching the main run to 96 x 96 dropped wall-clock to
-2 to 3 hours for 300 epochs at batch size 256, with the full frame cache
-in 0.9 GB of RAM. The 480 x 640 run is retained as a Phase 9 ablation to
-measure how much fidelity matters on this task.
 
 ### Phase 6: arm jittered in place
 
