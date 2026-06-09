@@ -197,7 +197,7 @@ and eval protocol):
 
 | Axis | Default | Variants tested |
 |---|---|---|
-| Image resolution | 96 x 96 | 480 x 640 (`configs/ablations/high_res.yaml`, already trained: `runs/ablation_high_res/20260527_102159/`) |
+| Image resolution | 480 x 640 (native, no resizing) | 96 x 96 (`dataset.image_size=[96,96]`, faster ablation run) |
 | Action chunk length | T_p=16, T_a=8 (`base.yaml`; saved `main_96x96` used T_a=4) | (T_p=8, T_a=4); (T_p=32, T_a=16) |
 | Observation horizon | T_o=2 | T_o=1 (no implicit velocity); T_o=4 |
 | Action representation | absolute joint angles (deg) | per-step deltas (deg/tick); joint velocities (deg/s) |
@@ -264,16 +264,16 @@ uv run python -m diffusion_policy_soarm.scripts.preextract_frames \
     --config diffusion_policy_soarm/configs/base.yaml
 ```
 
-Cache is written to `recordings/redcubes_bluecup/frame_cache/`. At 96 x 96
-(about 0.9 GB) it is loaded fully into RAM at dataset init
-(`preload_cache: true`).
+Cache is written to `recordings/redcubes_bluecup/frame_cache/`. At native
+480 x 640 (about 60 GB) it is memory-mapped rather than loaded into RAM
+(`preload_cache: false`), since the cache exceeds available system memory.
 
 ### 2. Full training
 
 ```bash
 uv run python -m diffusion_policy_soarm.train \
     --config diffusion_policy_soarm/configs/base.yaml \
-    training.experiment=main_96x96
+    training.experiment=main_480x640
 ```
 
 Runs are saved to `runs/<experiment>/<YYYYMMDD_HHMMSS>/`. Each run
@@ -284,8 +284,8 @@ with `best.pt` and `latest.pt`.
 ```bash
 uv run python -m diffusion_policy_soarm.train \
     --config diffusion_policy_soarm/configs/base.yaml \
-    training.experiment=main_96x96 \
-    --resume runs/main_96x96/<timestamp>
+    training.experiment=main_480x640 \
+    --resume runs/main_480x640/<timestamp>
 ```
 
 **Monitor training:**
@@ -297,15 +297,16 @@ uv run tensorboard --logdir runs/
 ### 3. Ablations
 
 ```bash
-# High-resolution (480x640): re-extract cache first with high_res override
+# Low-resolution (96x96) ablation: re-extract cache first at 96x96
 uv run python -m diffusion_policy_soarm.scripts.preextract_frames \
     --config diffusion_policy_soarm/configs/base.yaml \
-    --override diffusion_policy_soarm/configs/ablations/high_res.yaml
+    dataset.image_size=[96,96]
 
 uv run python -m diffusion_policy_soarm.train \
     --config diffusion_policy_soarm/configs/base.yaml \
-    --override diffusion_policy_soarm/configs/ablations/high_res.yaml \
-    training.experiment=ablation_high_res
+    dataset.image_size=[96,96] dataset.preload_cache=true \
+    training.batch_size=256 training.num_workers=6 \
+    training.experiment=ablation_96x96
 
 # Transformer backbone
 uv run python -m diffusion_policy_soarm.train \

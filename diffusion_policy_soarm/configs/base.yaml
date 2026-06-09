@@ -13,13 +13,14 @@ dataset:
   state_key: "observation.state"
   action_key: "action"
   fps: 30
-  # Images are resized to this (H, W) before being fed to the encoder.
-  # ResNet18 expects at least 32x32; 96x96 balances fidelity and memory.
+  # Target (H, W) fed to the encoder. Native camera resolution is 640x480 (WxH),
+  # so [480, 640] means no resizing: frames pass through at full fidelity.
   # ResNet18 handles arbitrary spatial sizes via global average pool.
-  image_size: [96, 96]
+  image_size: [480, 640]
   # Load pre-extracted frame cache into RAM (true) or memory-map it (false).
-  # At 96x96 the cache is ~0.9 GB — fits in RAM, eliminates all disk I/O during training.
-  preload_cache: true
+  # The native 480x640 cache is ~60 GB — too large for this 62 GB machine's RAM,
+  # so memory-map it. (At 96x96 the cache was ~1.7 GB and could be preloaded.)
+  preload_cache: false
 
 model:
   # Policy family: "diffusion" (paper default) or "bc" (Phase 7 MSE baseline).
@@ -81,9 +82,9 @@ bc:
 
 training:
   seed: 42
-  experiment: ""            # set per run: e.g. main_96x96, ablation_high_res
-  batch_size: 256           # 96x96 images are tiny; large batch keeps GPU saturated
-  num_workers: 6            # 6 of 16 logical cores; rest for GPU transfer + main process
+  experiment: ""            # set per run: e.g. main_480x640, ablation_96x96
+  batch_size: 16            # safe for 16 GB VRAM at native 480x640 with AMP
+  num_workers: 2            # native frames are large; fewer workers avoids RAM pressure
   num_epochs: 300
   lr: 1.0e-4
   weight_decay: 1.0e-6
