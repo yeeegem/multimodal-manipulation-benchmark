@@ -123,10 +123,12 @@ def _preprocess_obs_buffer(
         # (T_o, C, H_raw, W_raw)
         stacked = torch.stack(frames, dim=0)
 
-        # Cameras capture at 480x640; the encoder was trained on 96x96.
-        stacked = F.interpolate(
-            stacked, size=(target_h, target_w), mode="bilinear", align_corners=False
-        )
+        # Cameras capture at 480x640. Resize to the resolution the encoder was
+        # trained on; skip entirely when already native (no-op interpolation).
+        if stacked.shape[-2:] != (target_h, target_w):
+            stacked = F.interpolate(
+                stacked, size=(target_h, target_w), mode="bilinear", align_corners=False
+            )
 
         # Prepend batch dim → (1, T_o, C, H, W) and move to GPU.
         images[dataset_key] = stacked.unsqueeze(0).to(device)
