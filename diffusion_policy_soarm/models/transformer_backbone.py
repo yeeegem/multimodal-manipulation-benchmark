@@ -23,6 +23,8 @@ import torch
 import torch.nn as nn
 from omegaconf import DictConfig
 
+from diffusion_policy_soarm.models.cnn_backbone import SinusoidalTimestepEmbedding
+
 
 class TransformerDenoiser(nn.Module):
     """Transformer-based noise predictor (ablation against ConditionalUNet1d).
@@ -35,7 +37,29 @@ class TransformerDenoiser(nn.Module):
 
     def __init__(self, cfg: DictConfig, action_dim: int, cond_dim: int) -> None:
         super().__init__()
-        raise NotImplementedError("Phase 3 ablation")
+
+        d_model: int = cfg.denoiser.transformer.d_model
+        n_heads: int = cfg.denoiser.transformer.n_heads
+        n_layers: int = cfg.denoiser.transformer.n_layers
+        dropout: float = cfg.denoiser.transformer.dropout
+        pred_horizon: int = cfg.model.pred_horizon
+
+        self.action_proj = nn.Linear(action_dim, d_model)
+        self.t_embed = SinusoidalTimestepEmbedding(d_model)
+        self.pos_emb = nn.Parameter(torch.zeros(1, pred_horizon + 1, d_model))
+        self.cond_proj = nn.Sequential(nn.Linear(cond_dim, d_model), nn.SiLU())
+
+        decoder_layer = nn.TransformerDecoderLayer(
+            d_model=d_model,
+            nhead=n_heads,
+            dim_feedforward=4 * d_model,
+            dropout=dropout,
+            activation="gelu",
+            batch_first=True,
+        )
+        self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=n_layers)
+
+        self.output_head = nn.Linear(d_model, action_dim)
 
     def forward(self, x: torch.Tensor, t: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
         """Predict noise for the action chunk.
@@ -48,4 +72,14 @@ class TransformerDenoiser(nn.Module):
         Returns:
             ``(B, pred_horizon, action_dim)`` predicted noise.
         """
-        raise NotImplementedError("Phase 3 ablation")
+        tokens = self.action_proj(x)              # (B, T_p, d_model)
+        t_tok = self.t_embed(t).unsqueeze(1)       # (B, 1, d_model)
+        seq = torch.cat([t_tok, tokens], dim=1)    # (B, T_p + 1, d_model)
+        seq = seq + self.pos_emb
+
+        memory = self.cond_proj(cond).unsqueeze(1)  # (B, 1, d_model)
+
+        out = self.decoder(seq, memory)
+        out = out[:, 1:]                            # drop timestep token
+
+        return self.output_head(out)
