@@ -1,0 +1,5 @@
+# Ablation: full DDPM sampling (T=100) instead of the DDIM default (10 steps).
+# Merge on top of base.yaml. Weights are shared (same training config).
+
+infer:
+  sampler: "ddpm"

@@ -178,7 +178,7 @@ and eval protocol):
 | Axis | Default | Variants tested |
 |---|---|---|
 | Denoiser backbone | 1-D U-Net (CNN) | Transformer (`configs/ablations/transformer_backbone.yaml`) |
-| Sampler | DDPM (T=100) | DDIM with N in {5, 10, 20} |
+| Sampler | DDIM (10 steps) | DDPM (100 steps, `configs/ablations/ddpm_sampler.yaml`) |
 | Noise schedule | cosine | linear (Ho et al. 2020) |
 | EMA at inference | on (decay 0.9999) | off (raw last weights) |
 | Conditioning | FiLM | classifier-free guidance with 10% obs-dropout at training time |
@@ -196,6 +196,22 @@ Each row produces one entry in the final eval table (Tier A success,
 latency, parameter count). The Method-comparison rows are the headline
 result; the architectural and control rows are the in-depth ablation
 block.
+
+### Ablation results
+
+Filled in as each ablation finishes training and runs through the eval
+harness (Phase 8). Failure categories are listed in priority order; see
+`eval.failure_categories` in `base.yaml`.
+
+| Run | Config | Epochs | Tier A success rate | Top failure modes |
+|---|---|---|---|---|
+| Baseline (CNN U-Net, DDIM-10, 480x640) | `base.yaml` | 80 | TBD | TBD |
+| BC MSE baseline | `ablations/bc_baseline.yaml` | 80 | TBD | TBD |
+| Transformer denoiser | `ablations/transformer_backbone.yaml` | 80 | TBD | TBD |
+| DDPM sampler (100 steps) | `ablations/ddpm_sampler.yaml` | 80 | TBD | TBD |
+| 96 x 96 resolution | `dataset.image_size=[96,96]` | 80 | TBD | TBD |
+| Short action chunk | `ablations/short_chunk.yaml` | 80 | TBD | TBD |
+| Long action chunk | `ablations/long_chunk.yaml` | 80 | TBD | TBD |
 
 ---
 
@@ -304,11 +320,11 @@ uv run python -m diffusion_policy_soarm.train \
     --override diffusion_policy_soarm/configs/ablations/transformer_backbone.yaml \
     training.experiment=ablation_transformer
 
-# DDIM fast sampler
+# DDPM sampler (full 100-step, vs the DDIM-10 default)
 uv run python -m diffusion_policy_soarm.train \
     --config diffusion_policy_soarm/configs/base.yaml \
-    --override diffusion_policy_soarm/configs/ablations/ddim_sampler.yaml \
-    training.experiment=ablation_ddim
+    --override diffusion_policy_soarm/configs/ablations/ddpm_sampler.yaml \
+    training.experiment=ablation_ddpm
 ```
 
 ### 4. Inference on the arm
@@ -337,9 +353,6 @@ noise.
 ---
 
 ## Training hardware and cost
-
-All numbers below are wall-clock on a single NVIDIA RTX A5000 (24 GB VRAM,
-RTX 3080-class compute, similar TFLOPs to a consumer RTX 3080).
 
 Single NVIDIA RTX A5000 (16 GB VRAM, laptop GPU).
 
